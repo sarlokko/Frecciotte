@@ -1,4 +1,4 @@
-import { applyAction, arrowClear, cloneGame, createGame } from "./engine";
+import { applyAction, arrowClear, cloneGame, createGame, launchableArrows } from "./engine";
 import { charFor, DIRS, isClearPath, key, NEXT_DIR, occupiedSet, parseLevel, type Arrow, type Dir, type LevelDef, type Mechanics, type SolStep } from "./types";
 
 function mulberry32(seed: number) {
@@ -29,6 +29,8 @@ export type GenSpec = {
   roots?: number;
   walls?: number;
   portals?: boolean;
+  decoys?: number;
+  spicy?: boolean;
   slack: number;
 };
 
@@ -129,6 +131,27 @@ export function placeArrows(
     arrows.push({ id: `a${n++}`, ...chosen, kind: "normal" });
   }
 
+  const decoyN = spec.decoys ?? 0;
+  for (let i = 0; i < decoyN; i++) {
+    const occ = occupiedSet(arrows);
+    const blocked = new Set<string>();
+    const candidates: { r: number; c: number; dir: Dir }[] = [];
+    for (let r = 0; r < spec.rows; r++) {
+      for (let c = 0; c < spec.cols; c++) {
+        if (occ.has(key(r, c)) || walls.has(key(r, c)) || forbidden.has(key(r, c))) continue;
+        for (const dir of DIRS) {
+          const probe: Arrow = { id: "t", r, c, dir, kind: "normal" };
+          if (isClearPath(probe, occ, blocked, walls, portalIndex, spec.rows, spec.cols)) {
+            candidates.push({ r, c, dir });
+          }
+        }
+      }
+    }
+    if (!candidates.length) break;
+    const chosen = pick(rng, candidates);
+    arrows.push({ id: `a${n++}`, ...chosen, kind: "normal" });
+  }
+
   if (arrows.length < Math.max(1, Math.floor(spec.count * 0.75))) return null;
 
   const order = [...arrows].reverse().map((a) => key(a.r, a.c));
@@ -187,7 +210,7 @@ export function replaySolution(
 }
 
 export function buildLevel(spec: GenSpec): LevelDef | null {
-  for (let attempt = 0; attempt < 50; attempt++) {
+  for (let attempt = 0; attempt < 80; attempt++) {
     const rng = mulberry32(spec.seed + attempt * 31);
     const placed = placeArrows(spec, rng);
     if (!placed) continue;
@@ -209,6 +232,7 @@ export function buildLevel(spec: GenSpec): LevelDef | null {
     if (!solution) continue;
     draft.solution = solution;
     draft.moveLimit = solution.length + spec.slack;
+    if (spec.spicy && !isSpicy(draft)) continue;
     const check = createGame(draft);
     const clone = cloneGame(check);
     for (const step of solution) {
@@ -219,33 +243,36 @@ export function buildLevel(spec: GenSpec): LevelDef | null {
   return null;
 }
 
+export function isSpicy(level: LevelDef): boolean {
+  const open = launchableArrows(createGame({ ...level, moveLimit: 99 })).length;
+  const waits = level.solution.filter((s) => s.kind === "wait").length;
+  return open >= 2 && waits >= 1;
+}
+
 export function finalizeHandcraft(
   partial: Omit<LevelDef, "moveLimit" | "solution"> & { slack: number; order?: string[] },
 ): LevelDef | null {
   const board = parseLevel(partial);
-  const order =
-    partial.order ??
-    board.arrows.map((a) => key(a.r, a.c));
+  const keys = board.arrows.map((a) => key(a.r, a.c));
   const draft: LevelDef = { ...partial, moveLimit: 99, solution: [] };
-  const solution = replaySolution(draft, order);
-  if (!solution) {
-    // try every permutation for tiny boards
-    if (board.arrows.length <= 6) {
-      const keys = board.arrows.map((a) => key(a.r, a.c));
-      const perms = permute(keys);
-      for (const p of perms) {
-        const sol = replaySolution(draft, p);
-        if (sol) {
-          draft.solution = sol;
-          draft.moveLimit = sol.length + partial.slack;
-          return draft;
-        }
-      }
-    }
-    return null;
+  const sols: SolStep[][] = [];
+  const tryOrder = (order: string[]) => {
+    const sol = replaySolution(draft, order);
+    if (sol) sols.push(sol);
+  };
+
+  if (board.arrows.length <= 6) {
+    for (const p of permute(keys)) tryOrder(p);
+  } else if (partial.order) {
+    tryOrder(partial.order);
+  } else {
+    tryOrder(keys);
   }
-  draft.solution = solution;
-  draft.moveLimit = solution.length + partial.slack;
+  if (sols.length === 0) return null;
+  sols.sort((a, b) => a.length - b.length);
+  const found = sols[0]!;
+  draft.solution = found;
+  draft.moveLimit = found.length + partial.slack;
   return draft;
 }
 

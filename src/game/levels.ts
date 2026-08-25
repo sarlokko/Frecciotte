@@ -10,7 +10,7 @@ const TUTORIAL: Omit<LevelDef, "moveLimit" | "solution">[] = [
     world: "eco",
     stage: 1,
     name: "Tocca",
-    lesson: "Tocca la freccia se la via fino al bordo è libera.",
+    lesson: "Tocca la freccia. Parte solo se arriva al bordo.",
     rows: 3,
     cols: 3,
     grid: ["...", ".E.", "..."],
@@ -20,66 +20,77 @@ const TUTORIAL: Omit<LevelDef, "moveLimit" | "solution">[] = [
     uid: "eco-2",
     world: "eco",
     stage: 2,
-    name: "Due frecce",
-    lesson: "Una alla volta. Scegli l'ordine.",
+    name: "Dietro",
+    lesson: "Quella davanti esce. L'eco resta: Attendi, poi la seconda.",
     rows: 3,
-    cols: 3,
-    grid: [".S.", "...", "N.."],
+    cols: 4,
+    grid: ["E.S.", "....", "...."],
     mechanics: ECO,
   },
   {
     uid: "eco-3",
     world: "eco",
     stage: 3,
-    name: "L'eco",
-    lesson: "La cella vuota resta occupata un turno. È l'eco.",
+    name: "Bivio",
+    lesson: "Due libere. Se Attendi troppo presto, le mosse non bastano.",
     rows: 3,
-    cols: 3,
-    grid: ["E.S", ".N.", "..."],
+    cols: 4,
+    grid: ["E..S", ".N..", "...."],
     mechanics: ECO,
   },
   {
     uid: "eco-4",
     world: "eco",
     stage: 4,
-    name: "Attendi",
-    lesson: "Se l'eco chiude la via, tocca Attendi. Costa una mossa.",
+    name: "Coda",
+    lesson: "Tre in fila. L'eco di chi esce chiude chi resta.",
     rows: 3,
-    cols: 4,
-    grid: ["E..S", "....", "...."],
+    cols: 5,
+    grid: ["E.E.S", ".....", "....."],
     mechanics: ECO,
   },
   {
     uid: "eco-5",
     world: "eco",
     stage: 5,
-    name: "Mosse",
-    lesson: "In alto vedi quante mosse restano. Non sprecarle.",
+    name: "Incrocio",
+    lesson: "Tre uscite. Solo il percorso corto entra nel limite.",
     rows: 4,
     cols: 4,
-    grid: ["E..S", "....", ".N..", "...."],
+    grid: [".S.W", "E...", "..N.", ".S.."],
     mechanics: ECO,
   },
   {
     uid: "eco-6",
     world: "eco",
     stage: 6,
-    name: "Incrocio",
-    lesson: "Tocca solo se è libera. Un errore costa un cuore.",
+    name: "Falso",
+    lesson: "Quella libera non è sempre la prima giusta.",
     rows: 4,
-    cols: 4,
-    grid: [".S.W", "E...", "..N.", "...."],
+    cols: 5,
+    grid: ["E...S", "..N..", "W....", "..S.."],
     mechanics: ECO,
   },
   {
     uid: "eco-7",
     world: "eco",
     stage: 7,
-    name: "Coda",
-    lesson: "Chi sta dietro aspetta chi sta davanti — e la sua eco.",
+    name: "Nodo",
+    lesson: "Un Attendi al momento giusto. Non prima.",
     rows: 4,
     cols: 5,
-    grid: ["E..ES", ".....", "..N..", "....."],
+    grid: ["E..S.", "N.W..", "..S.E", "....."],
+    mechanics: ECO,
+  },
+  {
+    uid: "eco-8",
+    world: "eco",
+    stage: 8,
+    name: "Morsa",
+    lesson: "Poche mosse, tante eco. Conta i turni.",
+    rows: 4,
+    cols: 4,
+    grid: ["E.S.", "N..W", "S.E.", "...."],
     mechanics: ECO,
   },
 ];
@@ -92,6 +103,8 @@ type SizeCurve = {
   roots?: number;
   walls?: number;
   portals?: boolean;
+  decoys?: number;
+  spicy?: boolean;
   slack: number;
 };
 
@@ -99,8 +112,18 @@ function curve(world: string, stage: number): SizeCurve {
   const t = (stage - 1) / 14;
   const lerp = (a: number, b: number) => Math.round(a + (b - a) * t);
   switch (world) {
-    case "eco":
-      return { rows: lerp(5, 7), cols: lerp(5, 7), count: lerp(6, 12), slack: 2 };
+    case "eco": {
+      const u = Math.max(0, (stage - 9) / 6);
+      const mix = (a: number, b: number) => Math.round(a + (b - a) * u);
+      return {
+        rows: mix(5, 8),
+        cols: mix(5, 8),
+        count: mix(8, 16),
+        decoys: mix(2, 4),
+        slack: 0,
+        spicy: true,
+      };
+    }
     case "traccia":
       return { rows: lerp(5, 9), cols: lerp(5, 9), count: lerp(8, 20), slack: 2 };
     case "rugiada":
@@ -162,7 +185,7 @@ function specFor(world: (typeof WORLDS)[number], stage: number): GenSpec {
     world: world.id,
     stage,
     name: STAGE_NAMES[stage - 1] ?? `Livello ${stage}`,
-    lesson: world.blurb,
+    lesson: world.id === "eco" ? "Due uscite, una sola entra nelle mosse. L'eco decide." : world.blurb,
     ...size,
     seed: world.id.length * 1000 + stage * 97,
     mechanics: world.mechanics,
@@ -172,7 +195,7 @@ function specFor(world: (typeof WORLDS)[number], stage: number): GenSpec {
 function tutorialLevels(): LevelDef[] {
   const out: LevelDef[] = [];
   for (const raw of TUTORIAL) {
-    const done = finalizeHandcraft({ ...raw, slack: 2 });
+    const done = finalizeHandcraft({ ...raw, slack: 0 });
     if (!done) throw new Error(`Tutorial non risolvibile: ${raw.uid}`);
     out.push(done);
   }
@@ -192,7 +215,9 @@ function generatedWorld(worldId: string, fromStage: number): LevelDef[] {
         roots: 0,
         portals: shrink > 2 ? false : spec.portals,
         walls: Math.max(0, (spec.walls ?? 0) - 1),
-        seed: spec.seed + 11 + shrink,
+        decoys: Math.max(0, (spec.decoys ?? 0) - 1),
+        spicy: shrink < 5 ? spec.spicy : false,
+        seed: spec.seed + 13 + shrink,
       };
       level = buildLevel(spec);
     }
@@ -204,7 +229,7 @@ function generatedWorld(worldId: string, fromStage: number): LevelDef[] {
 
 export const LEVELS: LevelDef[] = [
   ...tutorialLevels(),
-  ...generatedWorld("eco", 8),
+  ...generatedWorld("eco", 9),
   ...generatedWorld("traccia", 1),
   ...generatedWorld("rugiada", 1),
   ...generatedWorld("girevoli", 1),

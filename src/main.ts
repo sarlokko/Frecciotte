@@ -14,7 +14,7 @@ import { findLevel, LEVELS, levelsInWorld, nextLevel } from "./game/levels";
 import { hintAction } from "./game/solver";
 import { WORLDS, worldById } from "./game/worlds";
 
-const STORAGE_KEY = "frecciotte-progress-v3";
+const STORAGE_KEY = "frecciotte-progress-v4";
 
 type Progress = {
   seenHowTo: boolean;
@@ -142,7 +142,7 @@ function renderWorlds() {
       <header class="brand">
         <p class="kicker">Sette piazze</p>
         <h1>Frecciotte</h1>
-        <p>Un mondo lineare, poi altri sei. Sempre più grandi.</p>
+        <p>Il primo mondo è una palestra con i bivi. Poi le piazze crescono.</p>
       </header>
       <button class="btn primary hero-play" type="button" data-action="continue">
         Continua · ${worldById(cont.world).name} ${cont.stage}

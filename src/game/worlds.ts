@@ -13,7 +13,7 @@ export const WORLDS: WorldDef[] = [
     id: "eco",
     name: "L'Eco",
     tag: "Mondo 1",
-    blurb: "Tocca una freccia. Lascia un'eco. Hai poche mosse.",
+    blurb: "Bivi, eco e poche mosse. Sbagliare l'ordine costa.",
     mechanics: { echoTtl: 1, trail: false, smoke: false },
   },
   {
