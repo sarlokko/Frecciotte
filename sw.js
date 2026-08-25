@@ -1,4 +1,4 @@
-const CACHE = "frecciotte-v2";
+const CACHE = "frecciotte-v3";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
