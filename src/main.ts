@@ -8,7 +8,7 @@ import {
   type GameState,
 } from "./game/engine";
 import type { Arrow, Residue } from "./game/types";
-import { DIR_GLYPH, key, type Dir } from "./game/types";
+import { DIR_DELTA, DIR_GLYPH, key, type Dir } from "./game/types";
 import { MAX_HEARTS } from "./game/engine";
 import { findLevel, LEVELS, levelsInWorld, nextLevel } from "./game/levels";
 import { hintAction } from "./game/solver";
@@ -244,15 +244,18 @@ function residueClass(res: Residue | undefined): string {
   return "res-echo";
 }
 
-function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; leavingArrows?: Arrow[] }) {
+function renderGame(opts?: {
+  shakeHeart?: boolean;
+  overlay?: "won" | "lost";
+  flight?: { arrow: Arrow; path: { r: number; c: number }[] };
+}) {
   if (!state) return;
   const { level, arrows, hearts, status, board, residues, movesLeft, hint } = state;
   const map = new Map(arrows.map((a) => [key(a.r, a.c), a]));
-  for (const a of opts?.leavingArrows ?? []) map.set(key(a.r, a.c), a);
   const resMap = new Map(residues.map((e) => [key(e.r, e.c), e]));
   const showOverlay = opts?.overlay ?? (status === "won" || status === "lost" ? status : null);
-  const leaving = new Set((opts?.leavingArrows ?? []).map((a) => a.id));
   const hintAt = hint && hint.kind !== "wait" ? hint.at : "";
+  const wakeAt = new Map((opts?.flight?.path ?? []).map((p, i) => [key(p.r, p.c), i]));
 
   const cells: string[] = [];
   for (let r = 0; r < level.rows; r++) {
@@ -262,15 +265,23 @@ function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; lea
       const res = resMap.get(k);
       const wall = board.walls.has(k);
       const portal = board.portalIndex.has(k);
-      const classes = ["cell", wall ? "wall" : "", portal ? "portal" : "", residueClass(res)]
+      const wake = wakeAt.get(k);
+      const classes = [
+        "cell",
+        wall ? "wall" : "",
+        portal ? "portal" : "",
+        residueClass(res),
+        wake !== undefined ? "flight-wake" : "",
+      ]
         .filter(Boolean)
         .join(" ");
       const ttl = res && res.ttl > 0 ? `<span class="ttl">${res.ttl}</span>` : "";
+      const wakeStyle = wake !== undefined ? ` style="--wake:${wake}"` : "";
       if (arrow) {
         cells.push(`
-          <div class="${classes}" data-r="${r}" data-c="${c}">
+          <div class="${classes}" data-r="${r}" data-c="${c}"${wakeStyle}>
             ${ttl}
-            <button class="arrow-btn ${arrow.kind} ${hintAt === k ? "hint" : ""} ${leaving.has(arrow.id) ? `leaving-${arrow.dir}` : ""}" type="button" data-id="${arrow.id}" aria-label="Freccia ${DIR_GLYPH[arrow.dir]}">
+            <button class="arrow-btn ${arrow.kind} ${hintAt === k ? "hint" : ""}" type="button" data-id="${arrow.id}" aria-label="Freccia ${DIR_GLYPH[arrow.dir]}">
               ${arrowSvg(arrow.dir, arrow.kind)}
             </button>
             ${arrow.kind === "spin" ? `<button class="spin-badge" type="button" data-spin="${arrow.id}" aria-label="Ruota">↻</button>` : ""}
@@ -278,7 +289,7 @@ function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; lea
         `);
       } else {
         cells.push(
-          `<div class="${classes}" data-r="${r}" data-c="${c}">${ttl}${portal ? '<span class="portal-ring"></span>' : ""}</div>`,
+          `<div class="${classes}" data-r="${r}" data-c="${c}"${wakeStyle}>${ttl}${portal ? '<span class="portal-ring"></span>' : ""}</div>`,
         );
       }
     }
@@ -303,10 +314,17 @@ function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; lea
         <div class="hearts" aria-label="${hearts} cuori">${heartsHtml(hearts, opts?.shakeHeart)}</div>
       </div>
       <p class="lesson">${level.lesson}</p>
-      <div class="board-wrap ${opts?.shakeHeart ? "flash-bad" : ""}">
+      <div class="board-wrap ${opts?.shakeHeart ? "flash-bad" : ""} ${opts?.flight ? "flying" : ""}">
         <div class="board-scroll">
-          <div class="board" style="grid-template-columns: repeat(${level.cols}, minmax(26px, 1fr)); grid-template-rows: repeat(${level.rows}, minmax(26px, 1fr)); aspect-ratio: ${level.cols} / ${level.rows};">
-            ${cells.join("")}
+          <div class="board-stage" style="aspect-ratio: ${level.cols} / ${level.rows};">
+            <div class="board" style="grid-template-columns: repeat(${level.cols}, minmax(26px, 1fr)); grid-template-rows: repeat(${level.rows}, minmax(26px, 1fr));">
+              ${cells.join("")}
+            </div>
+            ${
+              opts?.flight
+                ? `<div class="flight-layer" aria-hidden="true"><div class="flyer ${opts.flight.arrow.kind}">${arrowSvg(opts.flight.arrow.dir, opts.flight.arrow.kind)}</div></div>`
+                : ""
+            }
           </div>
         </div>
         ${toast ? `<div class="toast">${toast}</div>` : ""}
@@ -341,12 +359,14 @@ function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; lea
 function bindGameEvents() {
   if (!state) return;
   app.querySelector('[data-action="list"]')?.addEventListener("click", () => {
+    if (animating) return;
     openWorld = state?.level.world ?? openWorld;
     screen = "list";
     state = null;
     render();
   });
   app.querySelector('[data-action="retry"]')?.addEventListener("click", () => {
+    if (animating) return;
     if (state) startLevel(state.level.uid);
   });
   app.querySelector('[data-action="next"]')?.addEventListener("click", () => {
@@ -415,8 +435,8 @@ async function onLaunch(id: string) {
   animating = true;
   buzz(14);
   toast = result.arrow.kind === "root" ? "Radice piantata" : "Eco lasciata";
-  renderGame({ leavingArrows: [result.arrow] });
-  await wait(320);
+  renderGame({ flight: { arrow: result.arrow, path: result.path } });
+  await playFlight(result.arrow, result.path);
   if (result.won) {
     onLevelWon();
     toast = null;
@@ -425,6 +445,85 @@ async function onLaunch(id: string) {
     renderGame({ overlay: state.loseReason ? "lost" : undefined });
   }
   animating = false;
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function flightMs(steps: number): number {
+  return Math.min(620, Math.max(220, steps * 70));
+}
+
+async function playFlight(arrow: Arrow, path: { r: number; c: number }[]): Promise<void> {
+  if (prefersReducedMotion()) return wait(90);
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const stage = app.querySelector<HTMLElement>(".board-stage");
+  const flyer = app.querySelector<HTMLElement>(".flyer");
+  if (!stage || !flyer || path.length === 0) return wait(180);
+
+  const origin = stage.querySelector<HTMLElement>(`.cell[data-r="${path[0]!.r}"][data-c="${path[0]!.c}"]`);
+  const size = origin?.getBoundingClientRect().width ?? 36;
+  flyer.style.width = `${size}px`;
+  flyer.style.height = `${size}px`;
+
+  const stageRect = stage.getBoundingClientRect();
+  const at = (r: number, c: number) => {
+    const el = stage.querySelector<HTMLElement>(`.cell[data-r="${r}"][data-c="${c}"]`);
+    if (!el) return null;
+    const rec = el.getBoundingClientRect();
+    return {
+      x: rec.left - stageRect.left + rec.width / 2 - size / 2,
+      y: rec.top - stageRect.top + rec.height / 2 - size / 2,
+    };
+  };
+
+  type Pose = { x: number; y: number; opacity: number; scale: number };
+  const poses: Pose[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const p = at(path[i]!.r, path[i]!.c);
+    if (!p) continue;
+    if (i > 0) {
+      const prev = path[i - 1]!;
+      const cur = path[i]!;
+      const jump = Math.abs(cur.r - prev.r) + Math.abs(cur.c - prev.c) > 1;
+      if (jump && poses.length > 0) {
+        const last = poses[poses.length - 1]!;
+        poses.push({ ...last, opacity: 0, scale: 0.6 });
+        poses.push({ ...p, opacity: 0, scale: 0.6 });
+      }
+    }
+    poses.push({ ...p, opacity: 1, scale: i === 0 ? 0.86 : 1.06 });
+  }
+  if (poses.length === 0) return wait(180);
+
+  const { dr, dc } = DIR_DELTA[arrow.dir];
+  const last = poses[poses.length - 1]!;
+  poses[0] = { ...poses[0]!, scale: 0.82, opacity: 1 };
+  poses.push({
+    x: last.x + dc * size * 1.45,
+    y: last.y + dr * size * 1.45,
+    opacity: 0,
+    scale: 0.72,
+  });
+
+  const frames: Keyframe[] = poses.map((p, i) => ({
+    transform: `translate(${p.x}px, ${p.y}px) scale(${p.scale})`,
+    opacity: String(p.opacity),
+    offset: i / (poses.length - 1),
+  }));
+
+  flyer.style.transform = `translate(${poses[0]!.x}px, ${poses[0]!.y}px) scale(${poses[0]!.scale})`;
+  flyer.style.opacity = "1";
+  try {
+    await flyer.animate(frames, {
+      duration: flightMs(path.length + 1),
+      easing: "cubic-bezier(0.22, 0.68, 0.18, 1)",
+      fill: "forwards",
+    }).finished;
+  } catch {
+    /* animation cancelled by a re-render */
+  }
 }
 
 function onLevelWon() {

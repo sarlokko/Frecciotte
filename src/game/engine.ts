@@ -36,7 +36,7 @@ export type GameState = {
 };
 
 export type LaunchResult =
-  | { ok: true; arrow: Arrow; won: boolean }
+  | { ok: true; arrow: Arrow; won: boolean; path: { r: number; c: number }[] }
   | { ok: false; reason: "blocked" | "ended"; hearts: number; status: GameStatus; loseReason: LoseReason };
 
 export function createGame(level: LevelDef): GameState {
@@ -189,10 +189,10 @@ export function launchArrow(state: GameState, id: string): LaunchResult {
     state.moves += 1;
     state.movesLeft = Math.max(0, state.movesLeft - 1);
     state.hint = null;
-    return { ok: true, arrow, won: true };
+    return { ok: true, arrow, won: true, path: trace.cells };
   }
   spendMove(state);
-  return { ok: true, arrow, won: false };
+  return { ok: true, arrow, won: false, path: trace.cells };
 }
 
 export function waitTurn(state: GameState): boolean {
