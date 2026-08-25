@@ -1,44 +1,44 @@
 import "./style.css";
 import {
+  canWait,
   createGame,
-  currentLaunchable,
-  fireWind,
+  launchArrow,
   spinArrow,
-  waitEcho,
+  waitTurn,
   type GameState,
 } from "./game/engine";
-import type { Arrow } from "./game/types";
-import { LEVELS, describeLevel } from "./game/levels";
-import { hintAction } from "./game/solver";
-import { assertLevelsSolvable } from "./game/validate";
+import type { Arrow, Residue } from "./game/types";
 import { DIR_GLYPH, key, type Dir } from "./game/types";
 import { MAX_HEARTS } from "./game/engine";
+import { findLevel, LEVELS, levelsInWorld, nextLevel } from "./game/levels";
+import { hintAction } from "./game/solver";
+import { WORLDS, worldById } from "./game/worlds";
 
-const STORAGE_KEY = "frecciotte-progress-v2";
+const STORAGE_KEY = "frecciotte-progress-v3";
 
 type Progress = {
-  unlocked: number;
-  cleared: number[];
   seenHowTo: boolean;
+  lastUid: string;
+  cleared: string[];
 };
 
 function loadProgress(): Progress {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { unlocked: 1, cleared: [], seenHowTo: false };
-    const parsed = JSON.parse(raw) as Progress;
+    if (!raw) return { seenHowTo: false, lastUid: "eco-1", cleared: [] };
+    const p = JSON.parse(raw) as Progress;
     return {
-      unlocked: Math.max(1, parsed.unlocked ?? 1),
-      cleared: Array.isArray(parsed.cleared) ? parsed.cleared : [],
-      seenHowTo: Boolean(parsed.seenHowTo),
+      seenHowTo: Boolean(p.seenHowTo),
+      lastUid: typeof p.lastUid === "string" ? p.lastUid : "eco-1",
+      cleared: Array.isArray(p.cleared) ? p.cleared : [],
     };
   } catch {
-    return { unlocked: 1, cleared: [], seenHowTo: false };
+    return { seenHowTo: false, lastUid: "eco-1", cleared: [] };
   }
 }
 
-function saveProgress(p: Progress) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+function saveProgress() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
 }
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -46,9 +46,10 @@ let progress = loadProgress();
 let state: GameState | null = null;
 let animating = false;
 let toast: string | null = null;
-let screen: "home" | "howto" | "play" = progress.seenHowTo ? "home" : "howto";
+let screen: "howto" | "worlds" | "list" | "play" = progress.seenHowTo ? "worlds" : "howto";
+let openWorld = worldById(findLevel(progress.lastUid)?.world ?? "eco").id;
 
-function buzz(ms = 18) {
+function buzz(ms = 16) {
   try {
     navigator.vibrate?.(ms);
   } catch {
@@ -56,11 +57,39 @@ function buzz(ms = 18) {
   }
 }
 
-const arrowSvg = (dir: Dir, spin: boolean) => {
+function worldUnlocked(worldId: string): boolean {
+  const idx = WORLDS.findIndex((w) => w.id === worldId);
+  if (idx <= 0) return true;
+  const prev = WORLDS[idx - 1]!;
+  return levelsInWorld(prev.id).every((l) => progress.cleared.includes(l.uid));
+}
+
+function stageUnlocked(level: { world: string; stage: number; uid: string }): boolean {
+  if (!worldUnlocked(level.world)) return false;
+  if (level.stage === 1) return true;
+  const prev = levelsInWorld(level.world).find((l) => l.stage === level.stage - 1);
+  return Boolean(prev && progress.cleared.includes(prev.uid));
+}
+
+function continueLevel() {
+  const last = findLevel(progress.lastUid);
+  if (last && !progress.cleared.includes(last.uid) && stageUnlocked(last)) return last;
+  for (const w of WORLDS) {
+    if (!worldUnlocked(w.id)) break;
+    for (const l of levelsInWorld(w.id)) {
+      if (!progress.cleared.includes(l.uid) && stageUnlocked(l)) return l;
+    }
+  }
+  return LEVELS[0]!;
+}
+
+const arrowSvg = (dir: Dir, kind: Arrow["kind"]) => {
   const rot = { N: 0, E: 90, S: 180, W: 270 }[dir];
+  const colorClass = kind === "root" ? "root" : kind === "spin" ? "spin" : "";
   return `
-    <svg viewBox="0 0 64 64" aria-hidden="true" style="transform: rotate(${rot}deg)">
-      ${spin ? `<circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" stroke-width="4" stroke-dasharray="6 5" opacity="0.9"/>` : ""}
+    <svg class="${colorClass}" viewBox="0 0 64 64" aria-hidden="true" style="transform: rotate(${rot}deg)">
+      ${kind === "spin" ? `<circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" stroke-width="4" stroke-dasharray="6 5"/>` : ""}
+      ${kind === "root" ? `<circle cx="32" cy="38" r="7" fill="currentColor" opacity="0.45"/>` : ""}
       <path d="M32 8 L52 34 H40 V56 H24 V34 H12 Z" fill="currentColor"/>
     </svg>
   `;
@@ -68,76 +97,67 @@ const arrowSvg = (dir: Dir, spin: boolean) => {
 
 function render() {
   if (screen === "howto") return renderHowTo();
-  if (screen === "home" || !state) return renderHome();
-  return renderGame();
+  if (screen === "list") return renderList();
+  if (screen === "play" && state) return renderGame();
+  return renderWorlds();
 }
 
 function renderHowTo() {
   app.innerHTML = `
     <div class="shell howto">
       <header class="brand">
-        <p class="kicker">Nuovo rompicapo</p>
+        <p class="kicker">Rompicapo</p>
         <h1>Frecciotte</h1>
-        <p>Non è un clone: qui comandi il vento.</p>
+        <p>Tocca. L'eco resta. Le mosse no.</p>
       </header>
       <ol class="lessons">
         <li>
-          <strong>Stormo</strong>
-          <span>Scorri o tocca un tasto direzione. Partono tutte le frecce libere di quel vento.</span>
+          <strong>Tocca una freccia</strong>
+          <span>Parte solo se ha la via libera fino al bordo. Un tocco sbagliato costa un cuore.</span>
         </li>
         <li>
-          <strong>Eco</strong>
-          <span>Ogni volo lascia un'eco per un turno. L'eco occupa la cella: a volte devi attendere.</span>
+          <strong>L'eco occupa</strong>
+          <span>Dopo il volo la cella resta piena. Attendi per farla sbiadire — costa una mossa.</span>
         </li>
         <li>
-          <strong>Girevoli</strong>
-          <span>Le frecce con l'anello d'oro ruotano. Toccale, poi lancia il vento giusto.</span>
-        </li>
-        <li>
-          <strong>Portali</strong>
-          <span>Due anelli gemelli piegano il volo dall'altra parte della piazza.</span>
+          <strong>Limite di mosse</strong>
+          <span>Ogni volo e ogni attesa contano. Svuota la piazza prima che finiscano.</span>
         </li>
       </ol>
-      <button class="btn primary hero-play" type="button" data-action="start">Gioca dal telefono</button>
+      <button class="btn primary hero-play" type="button" data-action="start">Gioca</button>
     </div>
   `;
   app.querySelector('[data-action="start"]')?.addEventListener("click", () => {
     progress.seenHowTo = true;
-    saveProgress(progress);
-    screen = "home";
+    saveProgress();
+    screen = "worlds";
     render();
   });
 }
 
-function renderHome() {
-  const maxUnlocked = progress.unlocked;
+function renderWorlds() {
+  const cont = continueLevel();
   app.innerHTML = `
     <div class="shell screen-home">
       <header class="brand">
-        <p class="kicker">Rompicapo dei venti</p>
+        <p class="kicker">Sette piazze</p>
         <h1>Frecciotte</h1>
-        <p>Stormi, echi, girevoli. Svuota la piazza.</p>
+        <p>Un mondo lineare, poi altri sei. Sempre più grandi.</p>
       </header>
       <button class="btn primary hero-play" type="button" data-action="continue">
-        ${progress.cleared.length ? "Continua" : "Inizia"} · Livello ${Math.min(maxUnlocked, LEVELS.length)}
+        Continua · ${worldById(cont.world).name} ${cont.stage}
       </button>
-      <div class="level-list" role="list">
-        ${LEVELS.map((lvl) => {
-          const locked = lvl.id > maxUnlocked;
-          const done = progress.cleared.includes(lvl.id);
-          const meta = describeLevel(lvl);
+      <div class="world-list">
+        ${WORLDS.map((w) => {
+          const levels = levelsInWorld(w.id);
+          const done = levels.filter((l) => progress.cleared.includes(l.uid)).length;
+          const locked = !worldUnlocked(w.id);
           return `
-            <button
-              class="level-item ${done ? "done" : ""} ${locked ? "locked" : ""}"
-              type="button"
-              data-level="${lvl.id}"
-              ${locked ? "disabled" : ""}
-            >
-              <span class="meta">
-                <strong>${lvl.id}. ${lvl.name}</strong>
-                <span>${lvl.rows}×${lvl.cols} · ${meta.arrows} frecce${meta.spins ? ` · ${meta.spins} girevoli` : ""}</span>
-              </span>
-              <span class="badge">${locked ? "Bloccato" : done ? "Fatto" : "Apri"}</span>
+            <button class="world-card ${locked ? "locked" : ""} ${done === 15 ? "done" : ""}" type="button" data-world="${w.id}" ${locked ? "disabled" : ""}>
+              <span class="tag">${w.tag}</span>
+              <strong>${w.name}</strong>
+              <span class="blurb">${locked ? "Completa il mondo precedente" : w.blurb}</span>
+              <span class="prog">${done}/15</span>
             </button>
           `;
         }).join("")}
@@ -145,26 +165,62 @@ function renderHome() {
       <button class="btn ghost" type="button" data-action="howto">Come si gioca</button>
     </div>
   `;
-
-  app.querySelector('[data-action="continue"]')?.addEventListener("click", () => {
-    startLevel(Math.min(maxUnlocked, LEVELS.length));
-  });
+  app.querySelector('[data-action="continue"]')?.addEventListener("click", () => startLevel(cont.uid));
   app.querySelector('[data-action="howto"]')?.addEventListener("click", () => {
     screen = "howto";
     render();
   });
-  app.querySelectorAll<HTMLButtonElement>("[data-level]").forEach((btn) => {
+  app.querySelectorAll<HTMLButtonElement>("[data-world]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const id = Number(btn.dataset.level);
-      if (!Number.isFinite(id) || id > progress.unlocked) return;
-      startLevel(id);
+      openWorld = btn.dataset.world ?? "eco";
+      screen = "list";
+      render();
     });
   });
 }
 
-function startLevel(levelId: number) {
-  const level = LEVELS.find((l) => l.id === levelId);
+function renderList() {
+  const w = worldById(openWorld);
+  const levels = levelsInWorld(openWorld);
+  app.innerHTML = `
+    <div class="shell screen-home">
+      <header class="brand">
+        <p class="kicker">${w.tag}</p>
+        <h1>${w.name}</h1>
+        <p>${w.blurb}</p>
+      </header>
+      <div class="level-list">
+        ${levels.map((lvl) => {
+          const locked = !stageUnlocked(lvl);
+          const done = progress.cleared.includes(lvl.uid);
+          return `
+            <button class="level-item ${done ? "done" : ""} ${locked ? "locked" : ""}" type="button" data-uid="${lvl.uid}" ${locked ? "disabled" : ""}>
+              <span class="meta">
+                <strong>${lvl.stage}. ${lvl.name}</strong>
+                <span>${lvl.rows}×${lvl.cols} · ${lvl.moveLimit} mosse</span>
+              </span>
+              <span class="badge">${locked ? "Bloccato" : done ? "Fatto" : "Apri"}</span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      <button class="btn ghost" type="button" data-action="worlds">I mondi</button>
+    </div>
+  `;
+  app.querySelector('[data-action="worlds"]')?.addEventListener("click", () => {
+    screen = "worlds";
+    render();
+  });
+  app.querySelectorAll<HTMLButtonElement>("[data-uid]").forEach((btn) => {
+    btn.addEventListener("click", () => startLevel(btn.dataset.uid ?? ""));
+  });
+}
+
+function startLevel(uid: string) {
+  const level = findLevel(uid);
   if (!level) return;
+  progress.lastUid = uid;
+  saveProgress();
   state = createGame(level);
   animating = false;
   toast = null;
@@ -179,85 +235,79 @@ function heartsHtml(hearts: number, shake = false) {
   }).join("");
 }
 
-function renderGame(opts?: {
-  shakeHeart?: boolean;
-  overlay?: "won" | "lost";
-  leavingArrows?: Arrow[];
-}) {
+function residueClass(res: Residue | undefined): string {
+  if (!res) return "";
+  if (res.style === "root") return "res-root";
+  if (res.style === "smoke") return "res-smoke";
+  if (res.style === "trail") return "res-trail";
+  if (res.style === "dew") return "res-dew";
+  return "res-echo";
+}
+
+function renderGame(opts?: { shakeHeart?: boolean; overlay?: "won" | "lost"; leavingArrows?: Arrow[] }) {
   if (!state) return;
-  const { level, arrows, hearts, status, board, ecos, combo, hint } = state;
+  const { level, arrows, hearts, status, board, residues, movesLeft, hint } = state;
   const map = new Map(arrows.map((a) => [key(a.r, a.c), a]));
   for (const a of opts?.leavingArrows ?? []) map.set(key(a.r, a.c), a);
-  const ecoKeys = new Set(ecos.map((e) => key(e.r, e.c)));
+  const resMap = new Map(residues.map((e) => [key(e.r, e.c), e]));
   const showOverlay = opts?.overlay ?? (status === "won" || status === "lost" ? status : null);
   const leaving = new Set((opts?.leavingArrows ?? []).map((a) => a.id));
-  const hintIds = new Set<string>();
-  if (hint?.kind === "wind") {
-    for (const a of currentLaunchable(state, hint.dir)) hintIds.add(a.id);
-  }
-  if (hint?.kind === "spin") hintIds.add(hint.id);
+  const hintAt = hint && hint.kind !== "wait" ? hint.at : "";
 
   const cells: string[] = [];
   for (let r = 0; r < level.rows; r++) {
     for (let c = 0; c < level.cols; c++) {
       const k = key(r, c);
       const arrow = map.get(k);
+      const res = resMap.get(k);
       const wall = board.walls.has(k);
       const portal = board.portalIndex.has(k);
-      const eco = ecoKeys.has(k);
-      const classes = [
-        "cell",
-        wall ? "wall" : "",
-        portal ? "portal" : "",
-        eco ? "eco" : "",
-      ]
+      const classes = ["cell", wall ? "wall" : "", portal ? "portal" : "", residueClass(res)]
         .filter(Boolean)
         .join(" ");
-
+      const ttl = res && res.ttl > 0 ? `<span class="ttl">${res.ttl}</span>` : "";
       if (arrow) {
-        const leaveClass = leaving.has(arrow.id) ? `leaving-${arrow.dir}` : "";
         cells.push(`
           <div class="${classes}" data-r="${r}" data-c="${c}">
-            <button
-              class="arrow-btn ${arrow.spin ? "spin" : ""} ${hintIds.has(arrow.id) ? "hint" : ""} ${leaveClass}"
-              type="button"
-              data-id="${arrow.id}"
-              data-spin="${arrow.spin ? "1" : "0"}"
-              data-dir="${arrow.dir}"
-              aria-label="${arrow.spin ? "Girevole" : "Freccia"} ${DIR_GLYPH[arrow.dir]}"
-            >${arrowSvg(arrow.dir, arrow.spin)}</button>
+            ${ttl}
+            <button class="arrow-btn ${arrow.kind} ${hintAt === k ? "hint" : ""} ${leaving.has(arrow.id) ? `leaving-${arrow.dir}` : ""}" type="button" data-id="${arrow.id}" aria-label="Freccia ${DIR_GLYPH[arrow.dir]}">
+              ${arrowSvg(arrow.dir, arrow.kind)}
+            </button>
+            ${arrow.kind === "spin" ? `<button class="spin-badge" type="button" data-spin="${arrow.id}" aria-label="Ruota">↻</button>` : ""}
           </div>
         `);
       } else {
-        cells.push(`<div class="${classes}" data-r="${r}" data-c="${c}">${portal ? '<span class="portal-ring"></span>' : ""}</div>`);
+        cells.push(
+          `<div class="${classes}" data-r="${r}" data-c="${c}">${ttl}${portal ? '<span class="portal-ring"></span>' : ""}</div>`,
+        );
       }
     }
   }
 
-  const hintWait = hint?.kind === "wait";
-  const stars =
-    state.mistakes === 0 && state.maxCombo >= 2 ? 3 : state.mistakes === 0 ? 2 : 1;
+  const w = worldById(level.world);
+  const stars = state.movesLeft >= 2 ? 3 : state.movesLeft >= 1 ? 2 : 1;
+  const lostMsg =
+    state.loseReason === "moves" ? "Mosse finite. Riprova con un ordine più pulito." : "Cuori finiti. Un tocco sbagliato costa caro.";
 
   app.innerHTML = `
     <div class="shell play">
       <header class="brand compact">
-        <h1>Frecciotte</h1>
-        <p>${level.name}</p>
+        <h1>${w.name}</h1>
+        <p>${level.stage}. ${level.name}</p>
       </header>
       <div class="hud">
         <div class="hud-level">
-          <span class="label">Livello ${level.id}/${LEVELS.length}</span>
-          <span class="value">${combo > 1 ? `Stormo ×${combo}` : "Vento fermo"}</span>
+          <span class="label">Mosse</span>
+          <span class="value moves ${movesLeft <= 2 ? "low" : ""}">${movesLeft}</span>
         </div>
         <div class="hearts" aria-label="${hearts} cuori">${heartsHtml(hearts, opts?.shakeHeart)}</div>
       </div>
       <p class="lesson">${level.lesson}</p>
       <div class="board-wrap ${opts?.shakeHeart ? "flash-bad" : ""}">
-        <div
-          class="board"
-          style="grid-template-columns: repeat(${level.cols}, 1fr); grid-template-rows: repeat(${level.rows}, 1fr); aspect-ratio: ${level.cols} / ${level.rows};"
-        >
-          ${cells.join("")}
+        <div class="board-scroll">
+          <div class="board" style="grid-template-columns: repeat(${level.cols}, minmax(26px, 1fr)); grid-template-rows: repeat(${level.rows}, minmax(26px, 1fr)); aspect-ratio: ${level.cols} / ${level.rows};">
+            ${cells.join("")}
+          </div>
         </div>
         ${toast ? `<div class="toast">${toast}</div>` : ""}
         ${
@@ -265,64 +315,56 @@ function renderGame(opts?: {
             ? `<div class="overlay"><div class="overlay-card">
                 <h2>Piazza vuota</h2>
                 <p class="stars">${"★".repeat(stars)}${"☆".repeat(3 - stars)}</p>
-                <p>${state.mistakes === 0 ? "Nessun vento sbagliato." : `${state.mistakes} venti vuoti.`}</p>
-                <button class="btn primary" type="button" data-action="next">
-                  ${level.id < LEVELS.length ? "Livello successivo" : "Torna alla lista"}
-                </button>
+                <p>${state.movesLeft} mosse avanzate · ${state.mistakes} errori</p>
+                <button class="btn primary" type="button" data-action="next">Avanti</button>
               </div></div>`
             : showOverlay === "lost"
               ? `<div class="overlay"><div class="overlay-card">
-                <h2>Venti spezzati</h2>
-                <p>I cuori sono finiti. Riprova la piazza.</p>
+                <h2>Niente più mosse</h2>
+                <p>${lostMsg}</p>
                 <button class="btn primary" type="button" data-action="retry">Riprova</button>
               </div></div>`
               : ""
         }
       </div>
-      <div class="winds" aria-label="Venti">
-        <button class="btn wind" data-wind="N" type="button">${DIR_GLYPH.N}<small>Nord</small></button>
-        <button class="btn wind" data-wind="W" type="button">${DIR_GLYPH.W}<small>Ovest</small></button>
-        <button class="btn wind" data-wind="E" type="button">${DIR_GLYPH.E}<small>Est</small></button>
-        <button class="btn wind" data-wind="S" type="button">${DIR_GLYPH.S}<small>Sud</small></button>
-      </div>
-      <div class="actions">
-        <button class="btn" type="button" data-action="home">Lista</button>
-        <button class="btn ${hintWait ? "hinted" : ""}" type="button" data-action="wait" ${state.ecos.length === 0 ? "disabled" : ""}>Attendi</button>
+      <div class="actions four">
+        <button class="btn" type="button" data-action="list">Livelli</button>
+        <button class="btn ${hint?.kind === "wait" ? "hinted" : ""}" type="button" data-action="wait" ${canWait(state) ? "" : "disabled"}>Attendi</button>
         <button class="btn" type="button" data-action="hint">Aiuto</button>
         <button class="btn primary" type="button" data-action="retry">Reset</button>
       </div>
     </div>
   `;
-
   bindGameEvents();
 }
 
 function bindGameEvents() {
   if (!state) return;
-
-  app.querySelector('[data-action="home"]')?.addEventListener("click", () => {
-    screen = "home";
+  app.querySelector('[data-action="list"]')?.addEventListener("click", () => {
+    openWorld = state?.level.world ?? openWorld;
+    screen = "list";
     state = null;
     render();
   });
   app.querySelector('[data-action="retry"]')?.addEventListener("click", () => {
-    if (state) startLevel(state.level.id);
+    if (state) startLevel(state.level.uid);
   });
   app.querySelector('[data-action="next"]')?.addEventListener("click", () => {
     if (!state) return;
-    if (state.level.id < LEVELS.length) startLevel(state.level.id + 1);
+    const nxt = nextLevel(state.level);
+    if (nxt && stageUnlocked({ ...nxt, uid: nxt.uid })) startLevel(nxt.uid);
     else {
-      screen = "home";
+      screen = "worlds";
       state = null;
       render();
     }
   });
   app.querySelector('[data-action="wait"]')?.addEventListener("click", () => {
     if (!state || animating) return;
-    if (waitEcho(state)) {
-      toast = "L'eco svanisce";
+    if (waitTurn(state)) {
+      toast = "L'eco sbiadisce";
       buzz(12);
-      renderGame();
+      renderGame({ overlay: state.status === "lost" ? "lost" : undefined });
     }
   });
   app.querySelector('[data-action="hint"]')?.addEventListener("click", () => {
@@ -330,136 +372,72 @@ function bindGameEvents() {
     const action = hintAction(state);
     state.hint = action;
     if (!action) toast = "Nessun aiuto";
-    else if (action.kind === "wait") toast = "Attendi che l'eco svanisca";
-    else if (action.kind === "spin") toast = "Tocca una girevole per ruotarla";
-    else toast = `Lancia il vento ${DIR_GLYPH[action.dir]}`;
+    else if (action.kind === "wait") toast = "Attendi: l'eco deve sbiadire";
+    else if (action.kind === "spin") toast = "Ruota la girevole (↻)";
+    else toast = "Tocca la freccia evidenziata";
     renderGame();
   });
 
-  app.querySelectorAll<HTMLButtonElement>("[data-wind]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const dir = btn.dataset.wind as Dir;
-      void onWind(dir);
+  app.querySelectorAll<HTMLButtonElement>("[data-spin]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (!state || animating) return;
+      const id = btn.dataset.spin;
+      if (!id) return;
+      if (spinArrow(state, id)) {
+        buzz(20);
+        toast = "Ruotata · −1 mossa";
+        renderGame({ overlay: state.status === "lost" ? "lost" : undefined });
+      }
     });
   });
 
-  const wrap = app.querySelector(".board-wrap");
-  if (wrap) bindSwipe(wrap);
-  bindArrowPresses();
-}
-
-function bindSwipe(wrap: Element) {
-  let x0 = 0;
-  let y0 = 0;
-  wrap.addEventListener("pointerdown", (ev) => {
-    const e = ev as PointerEvent;
-    x0 = e.clientX;
-    y0 = e.clientY;
-  });
-  wrap.addEventListener("pointerup", (ev) => {
-    const e = ev as PointerEvent;
-    const dx = e.clientX - x0;
-    const dy = e.clientY - y0;
-    if (Math.hypot(dx, dy) < 42) return;
-    if (Math.abs(dx) > Math.abs(dy)) void onWind(dx > 0 ? "E" : "W");
-    else void onWind(dy > 0 ? "S" : "N");
-  });
-}
-
-function bindArrowPresses() {
   app.querySelectorAll<HTMLButtonElement>(".arrow-btn").forEach((btn) => {
-    let timer: number | null = null;
-    let rotated = false;
-
-    const clear = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    btn.addEventListener("pointerdown", (ev) => {
-      ev.stopPropagation();
-      rotated = false;
-      if (btn.dataset.spin !== "1") return;
-      timer = window.setTimeout(() => {
-        rotated = true;
-        if (!state) return;
-        const id = btn.dataset.id;
-        if (!id) return;
-        if (spinArrow(state, id)) {
-          buzz(24);
-          toast = "Girevole ruotata";
-          renderGame();
-        }
-      }, 420);
-    });
-    btn.addEventListener("pointerup", (ev) => {
-      ev.stopPropagation();
-      clear();
-      if (rotated || animating || !state) return;
+    btn.addEventListener("click", () => {
       const id = btn.dataset.id;
-      if (btn.dataset.spin === "1" && id) {
-        if (spinArrow(state, id)) {
-          buzz(24);
-          toast = "Girevole ruotata";
-          renderGame();
-        }
-        return;
-      }
-      const dir = btn.dataset.dir as Dir | undefined;
-      if (dir) void onWind(dir);
+      if (id) void onLaunch(id);
     });
-    btn.addEventListener("pointerleave", clear);
-    btn.addEventListener("pointercancel", clear);
   });
 }
 
-async function onWind(dir: Dir) {
+async function onLaunch(id: string) {
   if (!state || animating || state.status !== "playing") return;
-  const result = fireWind(state, dir);
-
+  const result = launchArrow(state, id);
   if (!result.ok) {
     buzz(40);
-    toast = "Vento vuoto";
+    toast = "Via occupata";
     renderGame({
       shakeHeart: true,
       overlay: result.status === "lost" ? "lost" : undefined,
     });
     return;
   }
-
   animating = true;
-  buzz(result.stormo ? 28 : 14);
-  toast = result.stormo ? `Stormo ×${result.launched.length}` : "Via!";
-  renderGame({ leavingArrows: result.launched });
-  await wait(360);
-
+  buzz(14);
+  toast = result.arrow.kind === "root" ? "Radice piantata" : "Eco lasciata";
+  renderGame({ leavingArrows: [result.arrow] });
+  await wait(320);
   if (result.won) {
     onLevelWon();
     toast = null;
     renderGame({ overlay: "won" });
   } else {
-    renderGame();
+    renderGame({ overlay: state.loseReason ? "lost" : undefined });
   }
   animating = false;
 }
 
 function onLevelWon() {
   if (!state) return;
-  const id = state.level.id;
-  if (!progress.cleared.includes(id)) progress.cleared.push(id);
-  progress.unlocked = Math.max(progress.unlocked, Math.min(LEVELS.length, id + 1));
-  saveProgress(progress);
+  if (!progress.cleared.includes(state.level.uid)) progress.cleared.push(state.level.uid);
+  const nxt = nextLevel(state.level);
+  if (nxt) progress.lastUid = nxt.uid;
+  saveProgress();
 }
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
-
-const report = assertLevelsSolvable();
-const bad = report.filter((r) => !r.ok);
-if (bad.length) console.warn("Livelli non risolvibili:", bad);
 
 render();
 
@@ -469,8 +447,7 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 
 declare global {
   interface Window {
-    frecciotte: { start: (id: number) => void };
+    frecciotte: { start: (uid: string) => void };
   }
 }
-
 window.frecciotte = { start: startLevel };

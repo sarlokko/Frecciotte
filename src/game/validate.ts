@@ -1,23 +1,26 @@
-import { createGame } from "./engine";
+import { applyAction, cloneGame, createGame } from "./engine";
 import { LEVELS } from "./levels";
-import { solve } from "./solver";
 
-export function assertLevelsSolvable(): {
-  id: number;
-  name: string;
-  ok: boolean;
-  arrows: number;
-  steps: number;
-}[] {
+export function assertLevelsSolvable() {
   return LEVELS.map((level) => {
-    const game = createGame(level);
-    const path = solve(level);
+    const state = cloneGame(createGame(level));
+    let ok = true;
+    for (const step of level.solution) {
+      if (!applyAction(state, step)) {
+        ok = false;
+        break;
+      }
+    }
+    if (state.arrows.length > 0) ok = false;
     return {
-      id: level.id,
-      name: level.name,
-      ok: path !== null,
-      arrows: game.arrows.length,
-      steps: path?.length ?? 0,
+      uid: level.uid,
+      world: level.world,
+      stage: level.stage,
+      ok,
+      arrows: createGame(level).arrows.length,
+      limit: level.moveLimit,
+      steps: level.solution.length,
+      size: `${level.rows}x${level.cols}`,
     };
   });
 }

@@ -1,18 +1,8 @@
 # Frecciotte
 
-Rompicapo dei **venti**, non un clone di Amaze GO.
+Rompicapo: **tocca una freccia** con la via libera. Ogni volo lascia un **eco** (la cella resta occupata). **Attendi** per farla sbiadire. Hai un **limite di mosse**.
 
-Sulla piazza non tocchi una freccia sola: scateni un vento. Partono tutte le frecce libere di quella direzione (**stormo**). Ogni volo lascia un'**eco** per un turno. Le frecce con l'anello d'oro sono **girevoli** (tieni premuto). I **portali** piegano il tragitto.
-
-Un vento vuoto costa un cuore.
-
-## Sul telefono
-
-Apri il sito in Safari o Chrome, poi *Aggiungi alla schermata Home*. Funziona offline.
-
-Scorri la griglia oppure usa i tasti Nord / Est / Sud / Ovest.
-
-## Avvio
+Sette mondi da 15 livelli. Il primo è lineare e semplice; poi traccia, rugiada, girevoli, fumo, portali, piazze enormi.
 
 ```bash
 npm install

@@ -1,306 +1,231 @@
-import { solve } from "./solver";
-import {
-  DIR_DELTA,
-  DIRS,
-  isClearPath,
-  occupiedSet,
-  parseLevel,
-  type Arrow,
-  type Dir,
-  type LevelDef,
-} from "./types";
+import { buildLevel, finalizeHandcraft, type GenSpec } from "./generate";
+import type { LevelDef, Mechanics } from "./types";
+import { WORLDS } from "./worlds";
 
-function mulberry32(seed: number) {
-  return () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const ECO: Mechanics = { echoTtl: 1, trail: false, smoke: false };
 
-function pick<T>(rng: () => number, arr: T[]): T {
-  return arr[Math.floor(rng() * arr.length)]!;
-}
-
-/** Reverse-insert arrows so a wind-sequence exists; solver confirms ecos/wait. */
-export function generatePuzzle(
-  id: number,
-  name: string,
-  lesson: string,
-  rows: number,
-  cols: number,
-  count: number,
-  seed: number,
-  spinCount = 0,
-): LevelDef | null {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const rng = mulberry32(seed + attempt * 17);
-    const arrows: Arrow[] = [];
-    let n = 0;
-
-    for (let i = 0; i < count; i++) {
-      const occ = occupiedSet(arrows);
-      const ecos = new Set<string>();
-      const walls = new Set<string>();
-      const portals = new Map<string, { r: number; c: number }>();
-      const candidates: { r: number; c: number; dir: Dir }[] = [];
-
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          if (occ.has(`${r},${c}`)) continue;
-          for (const dir of DIRS) {
-            const probe: Arrow = { id: "tmp", r, c, dir, spin: false };
-            if (isClearPath(probe, occ, ecos, walls, portals, rows, cols)) {
-              const { dr, dc } = DIR_DELTA[dir];
-              let len = 0;
-              let rr = r + dr;
-              let cc = c + dc;
-              while (rr >= 0 && rr < rows && cc >= 0 && cc < cols) {
-                len++;
-                rr += dr;
-                cc += dc;
-              }
-              if (len >= 0) candidates.push({ r, c, dir });
-            }
-          }
-        }
-      }
-      if (candidates.length === 0) break;
-      const chosen = pick(rng, candidates);
-      arrows.push({ id: `a${n++}`, ...chosen, spin: false });
-    }
-
-    if (arrows.length < Math.max(2, count - 1)) continue;
-
-    const spinN = Math.min(spinCount, arrows.length);
-    const idx = [...arrows.keys()];
-    for (let s = 0; s < spinN; s++) {
-      const j = Math.floor(rng() * idx.length);
-      const pickI = idx.splice(j, 1)[0];
-      if (pickI !== undefined) arrows[pickI]!.spin = true;
-    }
-
-    const grid = Array.from({ length: rows }, () => Array(cols).fill("."));
-    for (const a of arrows) {
-      const ch = a.spin ? a.dir.toLowerCase() : a.dir;
-      grid[a.r]![a.c] = ch;
-    }
-
-    const def: LevelDef = {
-      id,
-      name,
-      lesson,
-      rows,
-      cols,
-      grid: grid.map((row) => row.join("")),
-    };
-
-    if (solve(def)) return def;
-  }
-  return null;
-}
-
-export const TUTORIAL: LevelDef[] = [
+const TUTORIAL: Omit<LevelDef, "moveLimit" | "solution">[] = [
   {
-    id: 1,
-    name: "Primo vento",
-    lesson: "Non scegli una freccia sola: scateni un vento. Scorri la griglia o usa i tasti sotto.",
+    uid: "eco-1",
+    world: "eco",
+    stage: 1,
+    name: "Tocca",
+    lesson: "Tocca la freccia se la via fino al bordo è libera.",
     rows: 3,
     cols: 3,
     grid: ["...", ".E.", "..."],
+    mechanics: ECO,
   },
   {
-    id: 2,
-    name: "Due venti",
-    lesson: "Ogni direzione è un vento. Soffia verso chi ha la via libera.",
+    uid: "eco-2",
+    world: "eco",
+    stage: 2,
+    name: "Due frecce",
+    lesson: "Una alla volta. Scegli l'ordine.",
     rows: 3,
     cols: 3,
     grid: [".S.", "...", "N.."],
+    mechanics: ECO,
   },
   {
-    id: 3,
-    name: "Stormo",
-    lesson: "Un solo vento porta via tutte le frecce libere di quella direzione.",
-    rows: 3,
-    cols: 3,
-    grid: ["E..", "...", "..E"],
-  },
-  {
-    id: 4,
-    name: "Eco",
-    lesson: "Le frecce lasciano un'eco per un turno. L'eco occupa la cella.",
+    uid: "eco-3",
+    world: "eco",
+    stage: 3,
+    name: "L'eco",
+    lesson: "La cella vuota resta occupata un turno. È l'eco.",
     rows: 3,
     cols: 3,
     grid: ["E.S", ".N.", "..."],
+    mechanics: ECO,
   },
   {
-    id: 5,
-    name: "Attesa",
-    lesson: "Se l'eco chiude la via, tocca Attendi. Poi lancia di nuovo il vento.",
+    uid: "eco-4",
+    world: "eco",
+    stage: 4,
+    name: "Attendi",
+    lesson: "Se l'eco chiude la via, tocca Attendi. Costa una mossa.",
     rows: 3,
     cols: 4,
     grid: ["E..S", "....", "...."],
+    mechanics: ECO,
   },
   {
-    id: 6,
-    name: "Girevole",
-    lesson: "L'anello d'oro ruota. Tocca la girevole, poi lancia il vento.",
-    rows: 3,
-    cols: 3,
-    grid: [".#.", ".n.", "..."],
-  },
-  {
-    id: 7,
-    name: "Roccia",
-    lesson: "La pietra non si sposta. Gira la freccia e fai svanire l'eco.",
-    rows: 3,
-    cols: 3,
-    grid: ["Es.", ".#.", "..."],
-  },
-  {
-    id: 8,
-    name: "Portale",
-    lesson: "I due anelli sono gemelli: il volo esce dall'altro lato.",
-    rows: 3,
+    uid: "eco-5",
+    world: "eco",
+    stage: 5,
+    name: "Mosse",
+    lesson: "In alto vedi quante mosse restano. Non sprecarle.",
+    rows: 4,
     cols: 4,
-    grid: ["E.a#", "...b", "...."],
+    grid: ["E..S", "....", ".N..", "...."],
+    mechanics: ECO,
+  },
+  {
+    uid: "eco-6",
+    world: "eco",
+    stage: 6,
+    name: "Incrocio",
+    lesson: "Tocca solo se è libera. Un errore costa un cuore.",
+    rows: 4,
+    cols: 4,
+    grid: [".S.W", "E...", "..N.", "...."],
+    mechanics: ECO,
+  },
+  {
+    uid: "eco-7",
+    world: "eco",
+    stage: 7,
+    name: "Coda",
+    lesson: "Chi sta dietro aspetta chi sta davanti — e la sua eco.",
+    rows: 4,
+    cols: 5,
+    grid: ["E..ES", ".....", "..N..", "....."],
+    mechanics: ECO,
   },
 ];
 
-const GEN_SPEC: {
-  name: string;
-  lesson: string;
+type SizeCurve = {
   rows: number;
   cols: number;
   count: number;
-  seed: number;
-  spin: number;
-}[] = [
-  {
-    name: "Doppio stormo",
-    lesson: "Due stormi, due venti. Quale togliere per primo?",
-    rows: 4,
-    cols: 4,
-    count: 6,
-    seed: 404,
-    spin: 0,
-  },
-  {
-    name: "Cerniera",
-    lesson: "Una girevole cambia il vento che puoi lanciare.",
-    rows: 4,
-    cols: 4,
-    count: 7,
-    seed: 505,
-    spin: 1,
-  },
-  {
-    name: "Traforo",
-    lesson: "Pensa all'eco: a volte il passaggio si apre solo dopo l'attesa.",
-    rows: 5,
-    cols: 5,
-    count: 9,
-    seed: 606,
-    spin: 1,
-  },
-  {
-    name: "Croce",
-    lesson: "Quattro direzioni strette. Non lanciare un vento vuoto.",
-    rows: 5,
-    cols: 5,
-    count: 10,
-    seed: 707,
-    spin: 0,
-  },
-  {
-    name: "Lanterna",
-    lesson: "Girevoli e stormi insieme. Ruota solo se serve.",
-    rows: 5,
-    cols: 6,
-    count: 12,
-    seed: 808,
-    spin: 2,
-  },
-  {
-    name: "Sciame",
-    lesson: "Tanti venti possibili. Il combo cresce se ripeti la stessa direzione.",
-    rows: 6,
-    cols: 6,
-    count: 14,
-    seed: 909,
-    spin: 1,
-  },
-  {
-    name: "Sagra",
-    lesson: "La piazza piena. Stormo, eco, attesa, girevoli: svuotala.",
-    rows: 6,
-    cols: 6,
-    count: 16,
-    seed: 1010,
-    spin: 2,
-  },
+  spins?: number;
+  roots?: number;
+  walls?: number;
+  portals?: boolean;
+  slack: number;
+};
+
+function curve(world: string, stage: number): SizeCurve {
+  const t = (stage - 1) / 14;
+  const lerp = (a: number, b: number) => Math.round(a + (b - a) * t);
+  switch (world) {
+    case "eco":
+      return { rows: lerp(5, 7), cols: lerp(5, 7), count: lerp(6, 12), slack: 2 };
+    case "traccia":
+      return { rows: lerp(5, 9), cols: lerp(5, 9), count: lerp(8, 20), slack: 2 };
+    case "rugiada":
+      return { rows: lerp(6, 10), cols: lerp(6, 10), count: lerp(10, 24), slack: 3 };
+    case "girevoli":
+      return {
+        rows: lerp(6, 10),
+        cols: lerp(6, 10),
+        count: lerp(8, 20),
+        spins: lerp(2, 6),
+        walls: lerp(2, 8),
+        slack: 3,
+      };
+    case "fumo":
+      return { rows: lerp(7, 11), cols: lerp(7, 11), count: lerp(12, 28), slack: 3 };
+    case "portali":
+      return {
+        rows: lerp(7, 11),
+        cols: lerp(7, 11),
+        count: lerp(12, 24),
+        portals: true,
+        walls: lerp(1, 5),
+        slack: 3,
+      };
+    default:
+      return {
+        rows: lerp(8, 12),
+        cols: lerp(8, 12),
+        count: lerp(16, 32),
+        spins: lerp(0, 3),
+        walls: lerp(4, 12),
+        portals: stage > 10,
+        slack: 3,
+      };
+  }
+}
+
+const STAGE_NAMES = [
+  "Primi passi",
+  "Passo doppio",
+  "Residuo",
+  "Pausa",
+  "Conto",
+  "Nodo",
+  "Fila",
+  "Piazza",
+  "Stretto",
+  "Folla",
+  "Labirinto",
+  "Pressione",
+  "Groviglio",
+  "Denso",
+  "Maestro",
 ];
 
-function extraHandcrafted(): LevelDef[] {
-  return [
-    {
-      id: 11,
-      name: "Traforo",
-      lesson: "Il portale piega il volo oltre la pietra. Prima libera l'uscita.",
-      rows: 4,
-      cols: 4,
-      grid: ["#Ea.", "..b.", "S...", "..N."],
-    },
-    {
-      id: 13,
-      name: "Lanterna",
-      lesson: "Due anelli, due girevoli. Ruota, attendi, poi lo stormo.",
-      rows: 4,
-      cols: 5,
-      grid: [".#e#.", "S...a", "..N.b", ".#w.."],
-    },
-  ];
-}
-
-const generated: LevelDef[] = GEN_SPEC.map((spec, i) => {
-  const id = 9 + i;
-  const found = generatePuzzle(
-    id,
-    spec.name,
-    spec.lesson,
-    spec.rows,
-    spec.cols,
-    spec.count,
-    spec.seed,
-    spec.spin,
-  );
-  if (found) return { ...found, id };
+function specFor(world: (typeof WORLDS)[number], stage: number): GenSpec {
+  const size = curve(world.id, stage);
   return {
-    id,
-    name: spec.name,
-    lesson: spec.lesson,
-    rows: spec.rows,
-    cols: spec.cols,
-    grid: Array.from({ length: spec.rows }, () => ".".repeat(spec.cols)),
-  };
-});
-
-const extras = extraHandcrafted();
-
-export const LEVELS: LevelDef[] = [...TUTORIAL, ...generated]
-  .map((lvl) => {
-    const extra = extras.find((e) => e.id === lvl.id);
-    return extra ?? lvl;
-  })
-  .sort((a, b) => a.id - b.id);
-
-export function describeLevel(level: LevelDef): { arrows: number; spins: number } {
-  const board = parseLevel(level);
-  return {
-    arrows: board.arrows.length,
-    spins: board.arrows.filter((a) => a.spin).length,
+    world: world.id,
+    stage,
+    name: STAGE_NAMES[stage - 1] ?? `Livello ${stage}`,
+    lesson: world.blurb,
+    ...size,
+    seed: world.id.length * 1000 + stage * 97,
+    mechanics: world.mechanics,
   };
 }
 
+function tutorialLevels(): LevelDef[] {
+  const out: LevelDef[] = [];
+  for (const raw of TUTORIAL) {
+    const done = finalizeHandcraft({ ...raw, slack: 2 });
+    if (!done) throw new Error(`Tutorial non risolvibile: ${raw.uid}`);
+    out.push(done);
+  }
+  return out;
+}
+
+function generatedWorld(worldId: string, fromStage: number): LevelDef[] {
+  const world = WORLDS.find((w) => w.id === worldId)!;
+  const out: LevelDef[] = [];
+  for (let stage = fromStage; stage <= 15; stage++) {
+    let spec = specFor(world, stage);
+    let level = buildLevel(spec);
+    for (let shrink = 0; !level && shrink < 8; shrink++) {
+      spec = {
+        ...spec,
+        count: Math.max(4, spec.count - 2),
+        roots: 0,
+        portals: shrink > 2 ? false : spec.portals,
+        walls: Math.max(0, (spec.walls ?? 0) - 1),
+        seed: spec.seed + 11 + shrink,
+      };
+      level = buildLevel(spec);
+    }
+    if (!level) throw new Error(`Generazione fallita ${worldId}-${stage}`);
+    out.push(level);
+  }
+  return out;
+}
+
+export const LEVELS: LevelDef[] = [
+  ...tutorialLevels(),
+  ...generatedWorld("eco", 8),
+  ...generatedWorld("traccia", 1),
+  ...generatedWorld("rugiada", 1),
+  ...generatedWorld("girevoli", 1),
+  ...generatedWorld("fumo", 1),
+  ...generatedWorld("portali", 1),
+  ...generatedWorld("radici", 1),
+];
+
+export function levelsInWorld(worldId: string): LevelDef[] {
+  return LEVELS.filter((l) => l.world === worldId).sort((a, b) => a.stage - b.stage);
+}
+
+export function findLevel(uid: string): LevelDef | undefined {
+  return LEVELS.find((l) => l.uid === uid);
+}
+
+export function nextLevel(level: LevelDef): LevelDef | undefined {
+  const same = levelsInWorld(level.world);
+  const nxt = same.find((l) => l.stage === level.stage + 1);
+  if (nxt) return nxt;
+  const idx = WORLDS.findIndex((w) => w.id === level.world);
+  const following = WORLDS[idx + 1];
+  return following ? levelsInWorld(following.id)[0] : undefined;
+}

@@ -1,41 +1,43 @@
 import {
-  DIRS,
-  launchable,
+  isClearPath,
+  key,
+  NEXT_DIR,
+  occupiedSet,
   parseLevel,
+  residueSet,
+  tracePath,
   type Arrow,
   type Board,
-  type Dir,
   type LevelDef,
+  type Residue,
+  type ResidueStyle,
+  type SolStep,
 } from "./types";
-import { key, NEXT_DIR } from "./types";
 
 export const MAX_HEARTS = 3;
 
 export type GameStatus = "playing" | "won" | "lost";
+export type LoseReason = "hearts" | "moves" | null;
 
-export type Action =
-  | { kind: "wind"; dir: Dir }
-  | { kind: "spin"; id: string }
-  | { kind: "wait" };
+export type Action = SolStep;
 
 export type GameState = {
   level: LevelDef;
   board: Board;
   arrows: Arrow[];
-  ecos: { r: number; c: number }[];
+  residues: Residue[];
   hearts: number;
+  movesLeft: number;
   status: GameStatus;
-  combo: number;
-  maxCombo: number;
-  lastDir: Dir | null;
+  loseReason: LoseReason;
   moves: number;
   mistakes: number;
   hint: Action | null;
 };
 
-export type WindResult =
-  | { ok: true; launched: Arrow[]; stormo: boolean; combo: number; won: boolean }
-  | { ok: false; reason: "blocked" | "ended"; hearts: number; status: GameStatus };
+export type LaunchResult =
+  | { ok: true; arrow: Arrow; won: boolean }
+  | { ok: false; reason: "blocked" | "ended"; hearts: number; status: GameStatus; loseReason: LoseReason };
 
 export function createGame(level: LevelDef): GameState {
   const board = parseLevel(level);
@@ -43,118 +45,178 @@ export function createGame(level: LevelDef): GameState {
     level,
     board,
     arrows: board.arrows.map((a) => ({ ...a })),
-    ecos: [],
+    residues: [],
     hearts: MAX_HEARTS,
+    movesLeft: level.moveLimit,
     status: "playing",
-    combo: 0,
-    maxCombo: 0,
-    lastDir: null,
+    loseReason: null,
     moves: 0,
     mistakes: 0,
     hint: null,
   };
 }
 
-export function ecoSet(state: GameState): Set<string> {
-  return new Set(state.ecos.map((e) => key(e.r, e.c)));
-}
-
 export function cloneGame(state: GameState): GameState {
   return {
     ...state,
-    board: state.board,
     arrows: state.arrows.map((a) => ({ ...a })),
-    ecos: state.ecos.map((e) => ({ ...e })),
+    residues: state.residues.map((e) => ({ ...e })),
     hint: state.hint ? { ...state.hint } : null,
   };
+}
+
+export function blockedSet(state: GameState): Set<string> {
+  return residueSet(state.residues);
+}
+
+function spendMove(state: GameState): void {
+  state.moves += 1;
+  state.movesLeft = Math.max(0, state.movesLeft - 1);
+  state.hint = null;
+  if (state.arrows.length > 0 && state.movesLeft === 0) {
+    state.status = "lost";
+    state.loseReason = "moves";
+  }
 }
 
 function loseHeart(state: GameState): void {
   state.hearts = Math.max(0, state.hearts - 1);
   state.mistakes += 1;
   state.hint = null;
-  state.combo = 0;
-  if (state.hearts === 0) state.status = "lost";
+  if (state.hearts === 0) {
+    state.status = "lost";
+    state.loseReason = "hearts";
+  }
 }
 
-export function fireWind(state: GameState, dir: Dir): WindResult {
-  if (state.status !== "playing") {
-    return { ok: false, reason: "ended", hearts: state.hearts, status: state.status };
+export function tickResidues(state: GameState): void {
+  state.residues = state.residues
+    .map((e) => (e.ttl < 0 ? e : { ...e, ttl: e.ttl - 1 }))
+    .filter((e) => e.ttl !== 0);
+}
+
+export function canWait(state: GameState): boolean {
+  return state.residues.some((e) => e.ttl > 0);
+}
+
+function addResidue(state: GameState, r: number, c: number, ttl: number, style: ResidueStyle) {
+  const k = key(r, c);
+  if (state.board.walls.has(k)) return;
+  const existing = state.residues.find((e) => e.r === r && e.c === c);
+  if (existing) {
+    if (existing.ttl < 0 || ttl < 0) {
+      existing.ttl = -1;
+      existing.style = "root";
+      return;
+    }
+    if (ttl > existing.ttl) existing.ttl = ttl;
+    if (style === "smoke" || style === "trail") existing.style = style;
+    return;
+  }
+  state.residues.push({ r, c, ttl, style });
+}
+
+function paintLaunch(state: GameState, arrow: Arrow, cells: { r: number; c: number }[]) {
+  const ttl = state.level.mechanics.echoTtl;
+  const startStyle: ResidueStyle = ttl > 1 ? "dew" : "echo";
+
+  if (arrow.kind === "root") {
+    addResidue(state, arrow.r, arrow.c, -1, "root");
+  } else {
+    addResidue(state, arrow.r, arrow.c, ttl, startStyle);
   }
 
-  const launched = launchable(
-    state.arrows,
-    dir,
-    ecoSet(state),
+  if (state.level.mechanics.trail) {
+    for (const cell of cells) addResidue(state, cell.r, cell.c, ttl, "trail");
+  }
+
+  if (state.level.mechanics.smoke) {
+    if (arrow.dir === "E" || arrow.dir === "W") {
+      for (let c = 0; c < state.level.cols; c++) addResidue(state, arrow.r, c, ttl, "smoke");
+    } else {
+      for (let r = 0; r < state.level.rows; r++) addResidue(state, r, arrow.c, ttl, "smoke");
+    }
+  }
+}
+
+export function arrowClear(state: GameState, arrow: Arrow): boolean {
+  return isClearPath(
+    arrow,
+    occupiedSet(state.arrows),
+    blockedSet(state),
+    state.board.walls,
+    state.board.portalIndex,
+    state.level.rows,
+    state.level.cols,
+  );
+}
+
+export function launchableArrows(state: GameState): Arrow[] {
+  return state.arrows.filter((a) => arrowClear(state, a));
+}
+
+export function launchArrow(state: GameState, id: string): LaunchResult {
+  if (state.status !== "playing") {
+    return { ok: false, reason: "ended", hearts: state.hearts, status: state.status, loseReason: state.loseReason };
+  }
+  const arrow = state.arrows.find((a) => a.id === id);
+  if (!arrow) {
+    return { ok: false, reason: "blocked", hearts: state.hearts, status: state.status, loseReason: state.loseReason };
+  }
+
+  const occ = occupiedSet(state.arrows);
+  const trace = tracePath(
+    arrow,
+    occ,
+    blockedSet(state),
     state.board.walls,
     state.board.portalIndex,
     state.level.rows,
     state.level.cols,
   );
 
-  if (launched.length === 0) {
+  if (!trace.clear) {
     loseHeart(state);
-    return { ok: false, reason: "blocked", hearts: state.hearts, status: state.status };
+    return { ok: false, reason: "blocked", hearts: state.hearts, status: state.status, loseReason: state.loseReason };
   }
 
-  const ids = new Set(launched.map((a) => a.id));
-  state.arrows = state.arrows.filter((a) => !ids.has(a.id));
-  state.ecos = launched.map((a) => ({ r: a.r, c: a.c }));
-  state.combo = state.lastDir === dir ? state.combo + 1 : 1;
-  state.maxCombo = Math.max(state.maxCombo, state.combo);
-  state.lastDir = dir;
-  state.moves += 1;
-  state.hint = null;
-
+  state.arrows = state.arrows.filter((a) => a.id !== id);
+  tickResidues(state);
+  paintLaunch(state, arrow, trace.cells);
   if (state.arrows.length === 0) {
-    state.ecos = [];
+    state.residues = [];
     state.status = "won";
+    state.moves += 1;
+    state.movesLeft = Math.max(0, state.movesLeft - 1);
+    state.hint = null;
+    return { ok: true, arrow, won: true };
   }
+  spendMove(state);
+  return { ok: true, arrow, won: false };
+}
 
-  return {
-    ok: true,
-    launched,
-    stormo: launched.length >= 2,
-    combo: state.combo,
-    won: state.status === "won",
-  };
+export function waitTurn(state: GameState): boolean {
+  if (state.status !== "playing" || !canWait(state)) return false;
+  tickResidues(state);
+  spendMove(state);
+  return true;
 }
 
 export function spinArrow(state: GameState, id: string): boolean {
   if (state.status !== "playing") return false;
   const arrow = state.arrows.find((a) => a.id === id);
-  if (!arrow?.spin) return false;
+  if (!arrow || arrow.kind !== "spin") return false;
   arrow.dir = NEXT_DIR[arrow.dir];
-  state.hint = null;
-  return true;
-}
-
-export function waitEcho(state: GameState): boolean {
-  if (state.status !== "playing") return false;
-  if (state.ecos.length === 0) return false;
-  state.ecos = [];
-  state.hint = null;
+  spendMove(state);
   return true;
 }
 
 export function applyAction(state: GameState, action: Action): boolean {
-  if (action.kind === "wind") return fireWind(state, action.dir).ok;
-  if (action.kind === "spin") return spinArrow(state, action.id);
-  return waitEcho(state);
-}
-
-export function currentLaunchable(state: GameState, dir: Dir): Arrow[] {
-  return launchable(
-    state.arrows,
-    dir,
-    ecoSet(state),
-    state.board.walls,
-    state.board.portalIndex,
-    state.level.rows,
-    state.level.cols,
-  );
-}
-
-export function windsWithMoves(state: GameState): Dir[] {
-  return DIRS.filter((d) => currentLaunchable(state, d).length > 0);
+  if (action.kind === "wait") return waitTurn(state);
+  if (action.kind === "spin") {
+    const arrow = state.arrows.find((a) => key(a.r, a.c) === action.at);
+    return arrow ? spinArrow(state, arrow.id) : false;
+  }
+  const arrow = state.arrows.find((a) => key(a.r, a.c) === action.at);
+  return arrow ? launchArrow(state, arrow.id).ok : false;
 }

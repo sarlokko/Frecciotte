@@ -1,23 +1,47 @@
 export type Dir = "N" | "E" | "S" | "W";
+export type ArrowKind = "normal" | "spin" | "root";
+export type ResidueStyle = "echo" | "trail" | "dew" | "smoke" | "root";
 
 export type Arrow = {
   id: string;
   r: number;
   c: number;
   dir: Dir;
-  spin: boolean;
+  kind: ArrowKind;
+};
+
+export type Residue = {
+  r: number;
+  c: number;
+  ttl: number;
+  style: ResidueStyle;
 };
 
 export type Portal = { a: { r: number; c: number }; b: { r: number; c: number } };
 
+export type Mechanics = {
+  echoTtl: number;
+  trail: boolean;
+  smoke: boolean;
+};
+
+export type SolStep =
+  | { kind: "go"; at: string }
+  | { kind: "wait" }
+  | { kind: "spin"; at: string };
+
 export type LevelDef = {
-  id: number;
+  uid: string;
+  world: string;
+  stage: number;
   name: string;
   lesson: string;
   rows: number;
   cols: number;
-  /** NESW frecce, nesw girevoli, # muri, ab/cd portali, . vuoto */
   grid: string[];
+  mechanics: Mechanics;
+  moveLimit: number;
+  solution: SolStep[];
 };
 
 export const DIRS: Dir[] = ["N", "E", "S", "W"];
@@ -29,19 +53,11 @@ export const DIR_DELTA: Record<Dir, { dr: number; dc: number }> = {
   W: { dr: 0, dc: -1 },
 };
 
-export const NEXT_DIR: Record<Dir, Dir> = {
-  N: "E",
-  E: "S",
-  S: "W",
-  W: "N",
-};
+export const NEXT_DIR: Record<Dir, Dir> = { N: "E", E: "S", S: "W", W: "N" };
 
-export const DIR_GLYPH: Record<Dir, string> = {
-  N: "↑",
-  E: "→",
-  S: "↓",
-  W: "←",
-};
+export const DIR_GLYPH: Record<Dir, string> = { N: "↑", E: "→", S: "↓", W: "←" };
+
+export const ROOT_CHARS: Record<string, Dir> = { "1": "N", "2": "E", "3": "S", "4": "W" };
 
 export type Board = {
   arrows: Arrow[];
@@ -58,7 +74,11 @@ export function occupiedSet(arrows: Arrow[]): Set<string> {
   return new Set(arrows.map((a) => key(a.r, a.c)));
 }
 
-export function parseLevel(def: LevelDef): Board {
+export function residueSet(residues: Residue[]): Set<string> {
+  return new Set(residues.map((e) => key(e.r, e.c)));
+}
+
+export function parseLevel(def: Pick<LevelDef, "rows" | "cols" | "grid">): Board {
   const arrows: Arrow[] = [];
   const walls = new Set<string>();
   const marks: Record<string, { r: number; c: number }> = {};
@@ -73,88 +93,92 @@ export function parseLevel(def: LevelDef): Board {
         continue;
       }
       if ("NESW".includes(ch)) {
-        arrows.push({ id: `a${n++}`, r, c, dir: ch as Dir, spin: false });
+        arrows.push({ id: `a${n++}`, r, c, dir: ch as Dir, kind: "normal" });
         continue;
       }
       if ("nesw".includes(ch)) {
-        arrows.push({
-          id: `a${n++}`,
-          r,
-          c,
-          dir: ch.toUpperCase() as Dir,
-          spin: true,
-        });
+        arrows.push({ id: `a${n++}`, r, c, dir: ch.toUpperCase() as Dir, kind: "spin" });
         continue;
       }
-      if ("abcd".includes(ch)) {
-        marks[ch] = { r, c };
+      const rootDir = ROOT_CHARS[ch];
+      if (rootDir) {
+        arrows.push({ id: `a${n++}`, r, c, dir: rootDir, kind: "root" });
+        continue;
       }
+      if ("abcd".includes(ch)) marks[ch] = { r, c };
     }
   }
 
   const portals: Portal[] = [];
   if (marks.a && marks.b) portals.push({ a: marks.a, b: marks.b });
   if (marks.c && marks.d) portals.push({ a: marks.c, b: marks.d });
-
   const portalIndex = new Map<string, { r: number; c: number }>();
   for (const p of portals) {
     portalIndex.set(key(p.a.r, p.a.c), p.b);
     portalIndex.set(key(p.b.r, p.b.c), p.a);
   }
-
   return { arrows, walls, portals, portalIndex };
 }
 
-export function isClearPath(
+export type Trace = { clear: boolean; cells: { r: number; c: number }[] };
+
+export function tracePath(
   arrow: Arrow,
   occupied: Set<string>,
-  ecos: Set<string>,
+  blocked: Set<string>,
   walls: Set<string>,
   portalIndex: Map<string, { r: number; c: number }>,
   rows: number,
   cols: number,
-): boolean {
+): Trace {
   const { dr, dc } = DIR_DELTA[arrow.dir];
+  const cells = [{ r: arrow.r, c: arrow.c }];
   let r = arrow.r;
   let c = arrow.c;
   const seen = new Set<string>();
 
-  for (let step = 0; step < rows * cols + 6; step++) {
+  for (let step = 0; step < rows * cols + 8; step++) {
     const nr = r + dr;
     const nc = c + dc;
-    if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return true;
+    if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return { clear: true, cells };
 
     const k = key(nr, nc);
     const warp = portalIndex.get(k);
     if (warp) {
       const dk = key(warp.r, warp.c);
-      if (walls.has(dk) || occupied.has(dk) || ecos.has(dk)) return false;
-      if (seen.has(`w:${dk}`)) return false;
+      if (walls.has(dk) || occupied.has(dk) || blocked.has(dk)) return { clear: false, cells };
+      if (seen.has(`w:${dk}`)) return { clear: false, cells };
       seen.add(`w:${dk}`);
+      cells.push({ r: warp.r, c: warp.c });
       r = warp.r;
       c = warp.c;
       continue;
     }
 
-    if (walls.has(k) || occupied.has(k) || ecos.has(k)) return false;
+    if (walls.has(k) || occupied.has(k) || blocked.has(k)) return { clear: false, cells };
+    cells.push({ r: nr, c: nc });
     r = nr;
     c = nc;
   }
-
-  return false;
+  return { clear: false, cells };
 }
 
-export function launchable(
-  arrows: Arrow[],
-  dir: Dir,
-  ecos: Set<string>,
+export function isClearPath(
+  arrow: Arrow,
+  occupied: Set<string>,
+  blocked: Set<string>,
   walls: Set<string>,
   portalIndex: Map<string, { r: number; c: number }>,
   rows: number,
   cols: number,
-): Arrow[] {
-  const occ = occupiedSet(arrows);
-  return arrows.filter(
-    (a) => a.dir === dir && isClearPath(a, occ, ecos, walls, portalIndex, rows, cols),
-  );
+): boolean {
+  return tracePath(arrow, occupied, blocked, walls, portalIndex, rows, cols).clear;
+}
+
+export function charFor(arrow: Arrow): string {
+  if (arrow.kind === "spin") return arrow.dir.toLowerCase();
+  if (arrow.kind === "root") {
+    return ({ N: "1", E: "2", S: "3", W: "4" } as const)[arrow.dir];
+  }
+  return arrow.dir;
 }
