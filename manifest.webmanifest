@@ -1,0 +1,18 @@
+{
+  "name": "Frecciotte",
+  "short_name": "Frecciotte",
+  "description": "Rompicapo dei venti: stormi, echi, girevoli e portali.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#1b1024",
+  "theme_color": "#1b1024",
+  "lang": "it",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
