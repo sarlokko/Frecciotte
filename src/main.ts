@@ -91,7 +91,7 @@ function renderHowTo() {
         </li>
         <li>
           <strong>Girevoli</strong>
-          <span>Le frecce con l'anello ruotano. Tieni premuto, poi lancia il vento giusto.</span>
+          <span>Le frecce con l'anello d'oro ruotano. Toccale, poi lancia il vento giusto.</span>
         </li>
         <li>
           <strong>Portali</strong>
@@ -331,7 +331,7 @@ function bindGameEvents() {
     state.hint = action;
     if (!action) toast = "Nessun aiuto";
     else if (action.kind === "wait") toast = "Attendi che l'eco svanisca";
-    else if (action.kind === "spin") toast = "Tieni premuto una girevole";
+    else if (action.kind === "spin") toast = "Tocca una girevole per ruotarla";
     else toast = `Lancia il vento ${DIR_GLYPH[action.dir]}`;
     renderGame();
   });
@@ -398,6 +398,15 @@ function bindArrowPresses() {
       ev.stopPropagation();
       clear();
       if (rotated || animating || !state) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.spin === "1" && id) {
+        if (spinArrow(state, id)) {
+          buzz(24);
+          toast = "Girevole ruotata";
+          renderGame();
+        }
+        return;
+      }
       const dir = btn.dataset.dir as Dir | undefined;
       if (dir) void onWind(dir);
     });

@@ -146,7 +146,7 @@ export const TUTORIAL: LevelDef[] = [
   {
     id: 6,
     name: "Girevole",
-    lesson: "L'anello d'oro ruota. Tieni premuto la freccia, poi lancia il vento.",
+    lesson: "L'anello d'oro ruota. Tocca la girevole, poi lancia il vento.",
     rows: 3,
     cols: 3,
     grid: [".#.", ".n.", "..."],
