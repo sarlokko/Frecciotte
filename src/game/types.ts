@@ -5,16 +5,22 @@ export type Arrow = {
   r: number;
   c: number;
   dir: Dir;
+  spin: boolean;
 };
+
+export type Portal = { a: { r: number; c: number }; b: { r: number; c: number } };
 
 export type LevelDef = {
   id: number;
   name: string;
+  lesson: string;
   rows: number;
   cols: number;
-  /** Grid of directions or '.' for empty. Rows as strings. */
+  /** NESW frecce, nesw girevoli, # muri, ab/cd portali, . vuoto */
   grid: string[];
 };
+
+export const DIRS: Dir[] = ["N", "E", "S", "W"];
 
 export const DIR_DELTA: Record<Dir, { dr: number; dc: number }> = {
   N: { dr: -1, dc: 0 },
@@ -23,64 +29,132 @@ export const DIR_DELTA: Record<Dir, { dr: number; dc: number }> = {
   W: { dr: 0, dc: -1 },
 };
 
-export const DIR_CHARS: Record<string, Dir> = {
-  N: "N",
-  U: "N",
-  "^": "N",
-  E: "E",
-  R: "E",
-  ">": "E",
-  S: "S",
-  D: "S",
-  v: "S",
-  V: "S",
-  W: "W",
-  L: "W",
-  "<": "W",
+export const NEXT_DIR: Record<Dir, Dir> = {
+  N: "E",
+  E: "S",
+  S: "W",
+  W: "N",
 };
 
-export function parseLevel(def: LevelDef): Arrow[] {
+export const DIR_GLYPH: Record<Dir, string> = {
+  N: "↑",
+  E: "→",
+  S: "↓",
+  W: "←",
+};
+
+export type Board = {
+  arrows: Arrow[];
+  walls: Set<string>;
+  portals: Portal[];
+  portalIndex: Map<string, { r: number; c: number }>;
+};
+
+export function key(r: number, c: number): string {
+  return `${r},${c}`;
+}
+
+export function occupiedSet(arrows: Arrow[]): Set<string> {
+  return new Set(arrows.map((a) => key(a.r, a.c)));
+}
+
+export function parseLevel(def: LevelDef): Board {
   const arrows: Arrow[] = [];
+  const walls = new Set<string>();
+  const marks: Record<string, { r: number; c: number }> = {};
   let n = 0;
+
   for (let r = 0; r < def.rows; r++) {
     const row = def.grid[r] ?? "";
     for (let c = 0; c < def.cols; c++) {
       const ch = row[c] ?? ".";
-      const dir = DIR_CHARS[ch];
-      if (dir) {
-        arrows.push({ id: `a${n++}`, r, c, dir });
+      if (ch === "#") {
+        walls.add(key(r, c));
+        continue;
+      }
+      if ("NESW".includes(ch)) {
+        arrows.push({ id: `a${n++}`, r, c, dir: ch as Dir, spin: false });
+        continue;
+      }
+      if ("nesw".includes(ch)) {
+        arrows.push({
+          id: `a${n++}`,
+          r,
+          c,
+          dir: ch.toUpperCase() as Dir,
+          spin: true,
+        });
+        continue;
+      }
+      if ("abcd".includes(ch)) {
+        marks[ch] = { r, c };
       }
     }
   }
-  return arrows;
+
+  const portals: Portal[] = [];
+  if (marks.a && marks.b) portals.push({ a: marks.a, b: marks.b });
+  if (marks.c && marks.d) portals.push({ a: marks.c, b: marks.d });
+
+  const portalIndex = new Map<string, { r: number; c: number }>();
+  for (const p of portals) {
+    portalIndex.set(key(p.a.r, p.a.c), p.b);
+    portalIndex.set(key(p.b.r, p.b.c), p.a);
+  }
+
+  return { arrows, walls, portals, portalIndex };
 }
 
 export function isClearPath(
   arrow: Arrow,
   occupied: Set<string>,
+  ecos: Set<string>,
+  walls: Set<string>,
+  portalIndex: Map<string, { r: number; c: number }>,
   rows: number,
   cols: number,
 ): boolean {
   const { dr, dc } = DIR_DELTA[arrow.dir];
-  let r = arrow.r + dr;
-  let c = arrow.c + dc;
-  while (r >= 0 && r < rows && c >= 0 && c < cols) {
-    if (occupied.has(`${r},${c}`)) return false;
-    r += dr;
-    c += dc;
+  let r = arrow.r;
+  let c = arrow.c;
+  const seen = new Set<string>();
+
+  for (let step = 0; step < rows * cols + 6; step++) {
+    const nr = r + dr;
+    const nc = c + dc;
+    if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return true;
+
+    const k = key(nr, nc);
+    const warp = portalIndex.get(k);
+    if (warp) {
+      const dk = key(warp.r, warp.c);
+      if (walls.has(dk) || occupied.has(dk) || ecos.has(dk)) return false;
+      if (seen.has(`w:${dk}`)) return false;
+      seen.add(`w:${dk}`);
+      r = warp.r;
+      c = warp.c;
+      continue;
+    }
+
+    if (walls.has(k) || occupied.has(k) || ecos.has(k)) return false;
+    r = nr;
+    c = nc;
   }
-  return true;
+
+  return false;
 }
 
-export function occupiedSet(arrows: Arrow[]): Set<string> {
-  return new Set(arrows.map((a) => `${a.r},${a.c}`));
-}
-
-export function movableArrows(
+export function launchable(
   arrows: Arrow[],
+  dir: Dir,
+  ecos: Set<string>,
+  walls: Set<string>,
+  portalIndex: Map<string, { r: number; c: number }>,
   rows: number,
   cols: number,
 ): Arrow[] {
   const occ = occupiedSet(arrows);
-  return arrows.filter((a) => isClearPath(a, occ, rows, cols));
+  return arrows.filter(
+    (a) => a.dir === dir && isClearPath(a, occ, ecos, walls, portalIndex, rows, cols),
+  );
 }

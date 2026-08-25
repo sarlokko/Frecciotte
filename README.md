@@ -1,30 +1,21 @@
 # Frecciotte
 
-Clone web di **Amaze GO! / Freccia Rompicapo**: un rompicapo minimalista in cui fai uscire le frecce dalla griglia nell'ordine giusto.
+Rompicapo dei **venti**, non un clone di Amaze GO.
 
-## Come si gioca
+Sulla piazza non tocchi una freccia sola: scateni un vento. Partono tutte le frecce libere di quella direzione (**stormo**). Ogni volo lascia un'**eco** per un turno. Le frecce con l'anello d'oro sono **girevoli** (tieni premuto). I **portali** piegano il tragitto.
 
-1. Ogni freccia punta in una direzione (↑ → ↓ ←).
-2. Tocca una freccia solo se il percorso fino al bordo è libero.
-3. Un tocco bloccato costa un cuore (ne hai 3 per livello).
-4. Svuota la griglia per completare il livello.
-5. Usa **Suggerimento** per evidenziare una mossa sicura.
+Un vento vuoto costa un cuore.
+
+## Sul telefono
+
+Apri il sito in Safari o Chrome, poi *Aggiungi alla schermata Home*. Funziona offline.
+
+Scorri la griglia oppure usa i tasti Nord / Est / Sud / Ovest.
 
 ## Avvio
 
 ```bash
 npm install
+npm test
 npm run dev
 ```
-
-Poi apri l'URL mostrato da Vite (di solito `http://localhost:5173`).
-
-```bash
-npm run build
-npm run preview
-```
-
-## Stack
-
-- Vite + TypeScript
-- Nessuna dipendenza di runtime: tutto client-side, progresso in `localStorage`

@@ -1,7 +1,14 @@
-import type { Arrow, Dir, LevelDef } from "./types";
-import { DIR_DELTA, isClearPath, occupiedSet, parseLevel } from "./types";
-
-const DIRS: Dir[] = ["N", "E", "S", "W"];
+import { solve } from "./solver";
+import {
+  DIR_DELTA,
+  DIRS,
+  isClearPath,
+  occupiedSet,
+  parseLevel,
+  type Arrow,
+  type Dir,
+  type LevelDef,
+} from "./types";
 
 function mulberry32(seed: number) {
   return () => {
@@ -17,134 +24,283 @@ function pick<T>(rng: () => number, arr: T[]): T {
   return arr[Math.floor(rng() * arr.length)]!;
 }
 
-export type GeneratedLevel = LevelDef & {
-  /** Removal order that clears the board (keys "r,c"). */
-  solutionKeys: string[];
-};
-
-/** Build a solvable level by inserting arrows that are clear at insertion time. */
-export function generateLevel(
+/** Reverse-insert arrows so a wind-sequence exists; solver confirms ecos/wait. */
+export function generatePuzzle(
   id: number,
   name: string,
+  lesson: string,
   rows: number,
   cols: number,
   count: number,
   seed: number,
-): GeneratedLevel {
-  const rng = mulberry32(seed);
-  const arrows: Arrow[] = [];
-  let n = 0;
+  spinCount = 0,
+): LevelDef | null {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const rng = mulberry32(seed + attempt * 17);
+    const arrows: Arrow[] = [];
+    let n = 0;
 
-  for (let i = 0; i < count; i++) {
-    const occ = occupiedSet(arrows);
-    const candidates: { r: number; c: number; dir: Dir }[] = [];
+    for (let i = 0; i < count; i++) {
+      const occ = occupiedSet(arrows);
+      const ecos = new Set<string>();
+      const walls = new Set<string>();
+      const portals = new Map<string, { r: number; c: number }>();
+      const candidates: { r: number; c: number; dir: Dir }[] = [];
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (occ.has(`${r},${c}`)) continue;
-        for (const dir of DIRS) {
-          const probe: Arrow = { id: "tmp", r, c, dir };
-          if (isClearPath(probe, occ, rows, cols)) {
-            candidates.push({ r, c, dir });
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (occ.has(`${r},${c}`)) continue;
+          for (const dir of DIRS) {
+            const probe: Arrow = { id: "tmp", r, c, dir, spin: false };
+            if (isClearPath(probe, occ, ecos, walls, portals, rows, cols)) {
+              const { dr, dc } = DIR_DELTA[dir];
+              let len = 0;
+              let rr = r + dr;
+              let cc = c + dc;
+              while (rr >= 0 && rr < rows && cc >= 0 && cc < cols) {
+                len++;
+                rr += dr;
+                cc += dc;
+              }
+              if (len >= 0) candidates.push({ r, c, dir });
+            }
           }
         }
       }
+      if (candidates.length === 0) break;
+      const chosen = pick(rng, candidates);
+      arrows.push({ id: `a${n++}`, ...chosen, spin: false });
     }
 
-    if (candidates.length === 0) break;
+    if (arrows.length < Math.max(2, count - 1)) continue;
 
-    const scored = candidates.map((cand) => {
-      const { dr, dc } = DIR_DELTA[cand.dir];
-      let len = 0;
-      let r = cand.r + dr;
-      let c = cand.c + dc;
-      while (r >= 0 && r < rows && c >= 0 && c < cols) {
-        len++;
-        r += dr;
-        c += dc;
-      }
-      return { cand, len };
-    });
-    scored.sort((a, b) => b.len - a.len);
-    const top = scored.slice(0, Math.max(3, Math.ceil(scored.length * 0.35)));
-    const chosen = pick(
-      rng,
-      top.map((s) => s.cand),
-    );
+    const spinN = Math.min(spinCount, arrows.length);
+    const idx = [...arrows.keys()];
+    for (let s = 0; s < spinN; s++) {
+      const j = Math.floor(rng() * idx.length);
+      const pickI = idx.splice(j, 1)[0];
+      if (pickI !== undefined) arrows[pickI]!.spin = true;
+    }
 
-    arrows.push({ id: `a${n++}`, ...chosen });
+    const grid = Array.from({ length: rows }, () => Array(cols).fill("."));
+    for (const a of arrows) {
+      const ch = a.spin ? a.dir.toLowerCase() : a.dir;
+      grid[a.r]![a.c] = ch;
+    }
+
+    const def: LevelDef = {
+      id,
+      name,
+      lesson,
+      rows,
+      cols,
+      grid: grid.map((row) => row.join("")),
+    };
+
+    if (solve(def)) return def;
   }
+  return null;
+}
 
-  const grid = Array.from({ length: rows }, () => Array(cols).fill("."));
-  for (const a of arrows) {
-    grid[a.r]![a.c] = a.dir;
-  }
+export const TUTORIAL: LevelDef[] = [
+  {
+    id: 1,
+    name: "Primo vento",
+    lesson: "Non scegli una freccia sola: scateni un vento. Scorri la griglia o usa i tasti sotto.",
+    rows: 3,
+    cols: 3,
+    grid: ["...", ".E.", "..."],
+  },
+  {
+    id: 2,
+    name: "Due venti",
+    lesson: "Ogni direzione è un vento. Soffia verso chi ha la via libera.",
+    rows: 3,
+    cols: 3,
+    grid: [".S.", "...", "N.."],
+  },
+  {
+    id: 3,
+    name: "Stormo",
+    lesson: "Un solo vento porta via tutte le frecce libere di quella direzione.",
+    rows: 3,
+    cols: 3,
+    grid: ["E..", "...", "..E"],
+  },
+  {
+    id: 4,
+    name: "Eco",
+    lesson: "Le frecce lasciano un'eco per un turno. L'eco occupa la cella.",
+    rows: 3,
+    cols: 3,
+    grid: ["E.S", ".N.", "..."],
+  },
+  {
+    id: 5,
+    name: "Attesa",
+    lesson: "Se l'eco chiude la via, tocca Attendi. Poi lancia di nuovo il vento.",
+    rows: 3,
+    cols: 4,
+    grid: ["E..S", "....", "...."],
+  },
+  {
+    id: 6,
+    name: "Girevole",
+    lesson: "L'anello d'oro ruota. Tieni premuto la freccia, poi lancia il vento.",
+    rows: 3,
+    cols: 3,
+    grid: [".#.", ".n.", "..."],
+  },
+  {
+    id: 7,
+    name: "Roccia",
+    lesson: "La pietra non si sposta. Gira la freccia e fai svanire l'eco.",
+    rows: 3,
+    cols: 3,
+    grid: ["Es.", ".#.", "..."],
+  },
+  {
+    id: 8,
+    name: "Portale",
+    lesson: "I due anelli sono gemelli: il volo esce dall'altro lato.",
+    rows: 3,
+    cols: 4,
+    grid: ["E.a#", "...b", "...."],
+  },
+];
 
-  const solutionKeys = [...arrows].reverse().map((a) => `${a.r},${a.c}`);
+const GEN_SPEC: {
+  name: string;
+  lesson: string;
+  rows: number;
+  cols: number;
+  count: number;
+  seed: number;
+  spin: number;
+}[] = [
+  {
+    name: "Doppio stormo",
+    lesson: "Due stormi, due venti. Quale togliere per primo?",
+    rows: 4,
+    cols: 4,
+    count: 6,
+    seed: 404,
+    spin: 0,
+  },
+  {
+    name: "Cerniera",
+    lesson: "Una girevole cambia il vento che puoi lanciare.",
+    rows: 4,
+    cols: 4,
+    count: 7,
+    seed: 505,
+    spin: 1,
+  },
+  {
+    name: "Traforo",
+    lesson: "Pensa all'eco: a volte il passaggio si apre solo dopo l'attesa.",
+    rows: 5,
+    cols: 5,
+    count: 9,
+    seed: 606,
+    spin: 1,
+  },
+  {
+    name: "Croce",
+    lesson: "Quattro direzioni strette. Non lanciare un vento vuoto.",
+    rows: 5,
+    cols: 5,
+    count: 10,
+    seed: 707,
+    spin: 0,
+  },
+  {
+    name: "Lanterna",
+    lesson: "Girevoli e stormi insieme. Ruota solo se serve.",
+    rows: 5,
+    cols: 6,
+    count: 12,
+    seed: 808,
+    spin: 2,
+  },
+  {
+    name: "Sciame",
+    lesson: "Tanti venti possibili. Il combo cresce se ripeti la stessa direzione.",
+    rows: 6,
+    cols: 6,
+    count: 14,
+    seed: 909,
+    spin: 1,
+  },
+  {
+    name: "Sagra",
+    lesson: "La piazza piena. Stormo, eco, attesa, girevoli: svuotala.",
+    rows: 6,
+    cols: 6,
+    count: 16,
+    seed: 1010,
+    spin: 2,
+  },
+];
 
+function extraHandcrafted(): LevelDef[] {
+  return [
+    {
+      id: 11,
+      name: "Traforo",
+      lesson: "Il portale piega il volo oltre la pietra. Prima libera l'uscita.",
+      rows: 4,
+      cols: 4,
+      grid: ["#Ea.", "..b.", "S...", "..N."],
+    },
+    {
+      id: 13,
+      name: "Lanterna",
+      lesson: "Due anelli, due girevoli. Ruota, attendi, poi lo stormo.",
+      rows: 4,
+      cols: 5,
+      grid: [".#e#.", "S...a", "..N.b", ".#w.."],
+    },
+  ];
+}
+
+const generated: LevelDef[] = GEN_SPEC.map((spec, i) => {
+  const id = 9 + i;
+  const found = generatePuzzle(
+    id,
+    spec.name,
+    spec.lesson,
+    spec.rows,
+    spec.cols,
+    spec.count,
+    spec.seed,
+    spec.spin,
+  );
+  if (found) return { ...found, id };
   return {
     id,
-    name,
-    rows,
-    cols,
-    grid: grid.map((row) => row.join("")),
-    solutionKeys,
+    name: spec.name,
+    lesson: spec.lesson,
+    rows: spec.rows,
+    cols: spec.cols,
+    grid: Array.from({ length: spec.rows }, () => ".".repeat(spec.cols)),
+  };
+});
+
+const extras = extraHandcrafted();
+
+export const LEVELS: LevelDef[] = [...TUTORIAL, ...generated]
+  .map((lvl) => {
+    const extra = extras.find((e) => e.id === lvl.id);
+    return extra ?? lvl;
+  })
+  .sort((a, b) => a.id - b.id);
+
+export function describeLevel(level: LevelDef): { arrows: number; spins: number } {
+  const board = parseLevel(level);
+  return {
+    arrows: board.arrows.length,
+    spins: board.arrows.filter((a) => a.spin).length,
   };
 }
 
-/** Verify by replaying known solution keys. */
-export function verifySolution(level: GeneratedLevel): boolean {
-  let remaining = parseLevel(level);
-  for (const key of level.solutionKeys) {
-    const arrow = remaining.find((a) => `${a.r},${a.c}` === key);
-    if (!arrow) return false;
-    const occ = occupiedSet(remaining);
-    if (!isClearPath(arrow, occ, level.rows, level.cols)) return false;
-    remaining = remaining.filter((a) => a.id !== arrow.id);
-  }
-  return remaining.length === 0;
-}
-
-const NAMES = [
-  "Prima freccia",
-  "Due vie",
-  "Incrocio",
-  "Ordine",
-  "Blocco",
-  "Corridoio",
-  "Spirale",
-  "Nodo",
-  "Labirinto",
-  "Pressione",
-  "Catena",
-  "Tessitura",
-  "Groviglio",
-  "Denso",
-  "Maestro",
-];
-
-type Spec = { rows: number; cols: number; count: number; seed: number };
-
-const SPECS: Spec[] = [
-  { rows: 3, cols: 3, count: 1, seed: 11 },
-  { rows: 3, cols: 3, count: 3, seed: 22 },
-  { rows: 3, cols: 4, count: 5, seed: 33 },
-  { rows: 4, cols: 4, count: 7, seed: 44 },
-  { rows: 4, cols: 4, count: 9, seed: 55 },
-  { rows: 4, cols: 5, count: 11, seed: 66 },
-  { rows: 5, cols: 5, count: 14, seed: 77 },
-  { rows: 5, cols: 5, count: 16, seed: 88 },
-  { rows: 5, cols: 6, count: 18, seed: 99 },
-  { rows: 6, cols: 6, count: 20, seed: 111 },
-  { rows: 6, cols: 6, count: 24, seed: 122 },
-  { rows: 6, cols: 7, count: 28, seed: 133 },
-  { rows: 7, cols: 7, count: 32, seed: 144 },
-  { rows: 7, cols: 7, count: 36, seed: 155 },
-  { rows: 7, cols: 8, count: 40, seed: 166 },
-];
-
-export const LEVELS: GeneratedLevel[] = SPECS.map((spec, i) =>
-  generateLevel(i + 1, NAMES[i] ?? `Livello ${i + 1}`, spec.rows, spec.cols, spec.count, spec.seed),
-);
-
-export const MAX_HEARTS = 3;
