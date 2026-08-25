@@ -452,7 +452,7 @@ function prefersReducedMotion(): boolean {
 }
 
 function flightMs(steps: number): number {
-  return Math.min(620, Math.max(220, steps * 70));
+  return Math.min(720, Math.max(360, 160 + steps * 80));
 }
 
 async function playFlight(arrow: Arrow, path: { r: number; c: number }[]): Promise<void> {
@@ -478,8 +478,8 @@ async function playFlight(arrow: Arrow, path: { r: number; c: number }[]): Promi
     };
   };
 
-  type Pose = { x: number; y: number; opacity: number; scale: number };
-  const poses: Pose[] = [];
+  type Pt = { x: number; y: number; hide?: boolean };
+  const travel: Pt[] = [];
   for (let i = 0; i < path.length; i++) {
     const p = at(path[i]!.r, path[i]!.c);
     if (!p) continue;
@@ -487,33 +487,46 @@ async function playFlight(arrow: Arrow, path: { r: number; c: number }[]): Promi
       const prev = path[i - 1]!;
       const cur = path[i]!;
       const jump = Math.abs(cur.r - prev.r) + Math.abs(cur.c - prev.c) > 1;
-      if (jump && poses.length > 0) {
-        const last = poses[poses.length - 1]!;
-        poses.push({ ...last, opacity: 0, scale: 0.6 });
-        poses.push({ ...p, opacity: 0, scale: 0.6 });
+      if (jump && travel.length > 0) {
+        const last = travel[travel.length - 1]!;
+        travel.push({ ...last, hide: true });
+        travel.push({ ...p, hide: true });
       }
     }
-    poses.push({ ...p, opacity: 1, scale: i === 0 ? 0.86 : 1.06 });
+    travel.push(p);
   }
-  if (poses.length === 0) return wait(180);
+  if (travel.length === 0) return wait(180);
 
   const { dr, dc } = DIR_DELTA[arrow.dir];
-  const last = poses[poses.length - 1]!;
-  poses[0] = { ...poses[0]!, scale: 0.82, opacity: 1 };
-  poses.push({
-    x: last.x + dc * size * 1.45,
-    y: last.y + dr * size * 1.45,
-    opacity: 0,
-    scale: 0.72,
-  });
+  const last = travel[travel.length - 1]!;
+  const exit = { x: last.x + dc * size * 1.55, y: last.y + dr * size * 1.55 };
+  const start = travel[0]!;
 
-  const frames: Keyframe[] = poses.map((p, i) => ({
+  type Pose = { x: number; y: number; opacity: number; scale: number; offset: number };
+  const poses: Pose[] = [
+    { ...start, opacity: 1, scale: 0.78, offset: 0 },
+    { ...start, opacity: 1, scale: 1.12, offset: 0.14 },
+  ];
+  const midStart = 0.18;
+  const midEnd = 0.82;
+  for (let i = 0; i < travel.length; i++) {
+    const t = travel.length === 1 ? midStart : midStart + (i / (travel.length - 1)) * (midEnd - midStart);
+    poses.push({
+      ...travel[i]!,
+      opacity: travel[i]!.hide ? 0 : 1,
+      scale: 1.04,
+      offset: t,
+    });
+  }
+  poses.push({ ...exit, opacity: 0, scale: 0.7, offset: 1 });
+
+  const frames: Keyframe[] = poses.map((p) => ({
     transform: `translate(${p.x}px, ${p.y}px) scale(${p.scale})`,
-    opacity: String(p.opacity),
-    offset: i / (poses.length - 1),
+    opacity: p.opacity,
+    offset: p.offset,
   }));
 
-  flyer.style.transform = `translate(${poses[0]!.x}px, ${poses[0]!.y}px) scale(${poses[0]!.scale})`;
+  flyer.style.transform = `translate(${start.x}px, ${start.y}px) scale(0.78)`;
   flyer.style.opacity = "1";
   try {
     await flyer.animate(frames, {
