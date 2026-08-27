@@ -63,6 +63,28 @@ body {
   font-size: 1.45rem;
 }
 
+.play-head {
+  position: relative;
+  min-height: 2.6rem;
+}
+
+.play-head .back {
+  position: absolute;
+  left: 0;
+  top: 0.15rem;
+  z-index: 2;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.75rem;
+}
+
+.play-head .brand.compact {
+  padding: 0 4.6rem;
+}
+
+.play-head .brand.compact h1 {
+  font-size: 1.28rem;
+}
+
 .kicker {
   margin: 0;
   text-transform: uppercase;
@@ -300,10 +322,25 @@ body {
   opacity: 0.75;
 }
 
-.actions.four {
+.actions.four,
+.actions.three {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 0.45rem;
+}
+
+.actions.four {
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+
+.actions.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.actions .btn {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .world-list {
@@ -428,6 +465,7 @@ body {
 
 .btn:disabled {
   opacity: 0.35;
+  pointer-events: none;
 }
 
 .btn.primary {

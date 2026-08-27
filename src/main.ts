@@ -45,6 +45,7 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 let progress = loadProgress();
 let state: GameState | null = null;
 let animating = false;
+let inputLockUntil = 0;
 let toast: string | null = null;
 let screen: "howto" | "worlds" | "list" | "play" = progress.seenHowTo ? "worlds" : "howto";
 let openWorld = worldById(findLevel(progress.lastUid)?.world ?? "eco").id;
@@ -216,6 +217,14 @@ function renderList() {
   });
 }
 
+function lockInputs(ms = 360) {
+  inputLockUntil = performance.now() + ms;
+}
+
+function inputsLocked(): boolean {
+  return performance.now() < inputLockUntil;
+}
+
 function startLevel(uid: string) {
   const level = findLevel(uid);
   if (!level) return;
@@ -223,6 +232,7 @@ function startLevel(uid: string) {
   saveProgress();
   state = createGame(level);
   animating = false;
+  inputLockUntil = 0;
   toast = null;
   screen = "play";
   renderGame();
@@ -302,9 +312,12 @@ function renderGame(opts?: {
 
   app.innerHTML = `
     <div class="shell play">
-      <header class="brand compact">
-        <h1>${w.name}</h1>
-        <p>${level.stage}. ${level.name}</p>
+      <header class="play-head">
+        <button class="btn ghost back" type="button" data-action="list">Livelli</button>
+        <div class="brand compact">
+          <h1>${w.name}</h1>
+          <p>${level.stage}. ${level.name}</p>
+        </div>
       </header>
       <div class="hud">
         <div class="hud-level">
@@ -345,8 +358,7 @@ function renderGame(opts?: {
               : ""
         }
       </div>
-      <div class="actions four">
-        <button class="btn" type="button" data-action="list">Livelli</button>
+      <div class="actions three">
         <button class="btn ${hint?.kind === "wait" ? "hinted" : ""}" type="button" data-action="wait" ${canWait(state) ? "" : "disabled"}>Attendi</button>
         <button class="btn" type="button" data-action="hint">Aiuto</button>
         <button class="btn primary" type="button" data-action="retry">Reset</button>
@@ -359,18 +371,20 @@ function renderGame(opts?: {
 function bindGameEvents() {
   if (!state) return;
   app.querySelector('[data-action="list"]')?.addEventListener("click", () => {
-    if (animating) return;
+    if (animating || inputsLocked()) return;
     openWorld = state?.level.world ?? openWorld;
     screen = "list";
     state = null;
     render();
   });
-  app.querySelector('[data-action="retry"]')?.addEventListener("click", () => {
-    if (animating) return;
-    if (state) startLevel(state.level.uid);
+  app.querySelectorAll('[data-action="retry"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (animating || inputsLocked()) return;
+      if (state) startLevel(state.level.uid);
+    });
   });
   app.querySelector('[data-action="next"]')?.addEventListener("click", () => {
-    if (!state) return;
+    if (!state || inputsLocked()) return;
     const nxt = nextLevel(state.level);
     if (nxt && stageUnlocked({ ...nxt, uid: nxt.uid })) startLevel(nxt.uid);
     else {
@@ -379,34 +393,42 @@ function bindGameEvents() {
       render();
     }
   });
-  app.querySelector('[data-action="wait"]')?.addEventListener("click", () => {
-    if (!state || animating) return;
-    if (waitTurn(state)) {
-      toast = "L'eco sbiadisce";
-      buzz(12);
-      renderGame({ overlay: state.status === "lost" ? "lost" : undefined });
-    }
+  app.querySelector('[data-action="wait"]')?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!state || animating || inputsLocked()) return;
+    if (!waitTurn(state)) return;
+    toast = "L'eco sbiadisce";
+    buzz(12);
+    lockInputs(400);
+    const lost = state.status === "lost";
+    queueMicrotask(() => {
+      if (!state) return;
+      renderGame({ overlay: lost ? "lost" : undefined });
+    });
   });
   app.querySelector('[data-action="hint"]')?.addEventListener("click", () => {
-    if (!state || animating) return;
+    if (!state || animating || inputsLocked()) return;
     const action = hintAction(state);
     state.hint = action;
     if (!action) toast = "Nessun aiuto";
     else if (action.kind === "wait") toast = "Attendi: l'eco deve sbiadire";
     else if (action.kind === "spin") toast = "Ruota la girevole (↻)";
     else toast = "Tocca la freccia evidenziata";
+    lockInputs(280);
     renderGame();
   });
 
   app.querySelectorAll<HTMLButtonElement>("[data-spin]").forEach((btn) => {
     btn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      if (!state || animating) return;
+      if (!state || animating || inputsLocked()) return;
       const id = btn.dataset.spin;
       if (!id) return;
       if (spinArrow(state, id)) {
         buzz(20);
         toast = "Ruotata · −1 mossa";
+        lockInputs(280);
         renderGame({ overlay: state.status === "lost" ? "lost" : undefined });
       }
     });
@@ -421,7 +443,7 @@ function bindGameEvents() {
 }
 
 async function onLaunch(id: string) {
-  if (!state || animating || state.status !== "playing") return;
+  if (!state || animating || inputsLocked() || state.status !== "playing") return;
   const result = launchArrow(state, id);
   if (!result.ok) {
     buzz(40);
