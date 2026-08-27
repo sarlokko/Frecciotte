@@ -2,7 +2,7 @@ name: Deploy Pages
 
 on:
   push:
-    branches: [cursor/frecciotte-amaze-go-clone-64fa, main]
+    branches: [main, cursor/wait-attendi-livelli-64fa]
 
 permissions:
   contents: write
